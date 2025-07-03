@@ -233,19 +233,41 @@ app.post('/webhook/person-stage-updated', async (req, res) => {
   try {
     // Log the entire webhook payload for debugging
     console.log('=== WEBHOOK RECEIVED ===');
-    console.log('Headers:', JSON.stringify(req.headers, null, 2));
     console.log('Body:', JSON.stringify(req.body, null, 2));
     console.log('========================');
     
-    const { person, stage, assignedUserId } = req.body;
+    // FUB webhook structure is different - extract the data
+    const { event, resourceIds, data, uri } = req.body;
     
-    if (!person || !stage) {
-      console.log('❌ Missing required fields in webhook payload');
-      console.log('Available fields:', Object.keys(req.body));
-      return res.status(400).json({ error: 'Missing required fields' });
+    if (event !== 'peopleStageUpdated' || !resourceIds || !data || !data.stage) {
+      console.log('❌ Invalid webhook payload structure');
+      console.log('Event:', event);
+      console.log('ResourceIds:', resourceIds);
+      console.log('Data:', data);
+      return res.status(400).json({ error: 'Invalid webhook payload' });
     }
     
-    console.log(`Processing stage update for ${person.name}: ${stage}`);
+    const personId = resourceIds[0]; // Get the person ID from resourceIds
+    const stage = data.stage; // Get the new stage from data
+    
+    console.log(`Processing stage update for Person ID ${personId}: ${stage}`);
+    
+    // Get the full person data from FUB API using the person ID
+    console.log(`Fetching person data from FUB API for ID: ${personId}`);
+    const personData = await fubAPI.get(`/people/${personId}`);
+    
+    if (!personData || !personData.person) {
+      console.log('❌ Failed to get person data from FUB API');
+      return res.status(400).json({ error: 'Failed to get person data' });
+    }
+    
+    const person = personData.person;
+    const assignedUserId = person.assignedUserId || person.assignedUser?.id;
+    
+    console.log(`Retrieved person: ${person.name} (ID: ${person.id})`);
+    console.log(`Assigned User ID: ${assignedUserId}`);
+    console.log(`Person Tags: ${person.tags?.join(', ') || 'None'}`);
+    console.log(`New Stage: ${stage}`);
     
     // Step 1: Check if this is a stage change that triggers deletion
     const isDeletionStage = ["lead", "attempted contact", "spoke with customer", "unresponsive", "nurture"].includes(normalize(stage));
