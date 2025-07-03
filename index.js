@@ -258,7 +258,8 @@ app.post('/webhook/person-stage-updated', async (req, res) => {
       const personData = await fubAPI.get(`/people/${personId}`);
       console.log(`📊 FUB API Response:`, JSON.stringify(personData, null, 2));
       
-      if (!personData || !personData.person) {
+      // FUB API returns person data directly, not wrapped in { person: ... }
+      if (!personData || !personData.id) {
         console.log('❌ No person data in FUB API response');
         console.log('Response structure:', Object.keys(personData || {}));
         await sendCriticalError(
@@ -270,8 +271,9 @@ app.post('/webhook/person-stage-updated', async (req, res) => {
         return res.status(400).json({ error: 'No person data in response' });
       }
       
-      const person = personData.person;
-      const assignedUserId = person.assignedUserId || person.assignedUser?.id;
+      // Person data is directly in the response
+      const person = personData;
+      const assignedUserId = person.assignedUserId;
       
       console.log(`✅ Retrieved person: ${person.name} (ID: ${person.id})`);
       console.log(`👤 Assigned User ID: ${assignedUserId}`);
