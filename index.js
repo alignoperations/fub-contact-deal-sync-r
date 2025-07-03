@@ -231,9 +231,17 @@ const formatStageForBuyer = (pipelineName, stageName) => {
 // Main webhook handler
 app.post('/webhook/person-stage-updated', async (req, res) => {
   try {
+    // Log the entire webhook payload for debugging
+    console.log('=== WEBHOOK RECEIVED ===');
+    console.log('Headers:', JSON.stringify(req.headers, null, 2));
+    console.log('Body:', JSON.stringify(req.body, null, 2));
+    console.log('========================');
+    
     const { person, stage, assignedUserId } = req.body;
     
     if (!person || !stage) {
+      console.log('❌ Missing required fields in webhook payload');
+      console.log('Available fields:', Object.keys(req.body));
       return res.status(400).json({ error: 'Missing required fields' });
     }
     
