@@ -254,26 +254,44 @@ app.post('/webhook/person-stage-updated', async (req, res) => {
     
     // Get the full person data from FUB API using the person ID
     console.log(`🔍 Fetching person data from FUB API for ID: ${personId}`);
-    const personData = await fubAPI.get(`/people/${personId}`);
-    
-    if (!personData || !personData.person) {
-      console.log('❌ Failed to get person data from FUB API');
+    try {
+      const personData = await fubAPI.get(`/people/${personId}`);
+      console.log(`📊 FUB API Response:`, JSON.stringify(personData, null, 2));
+      
+      if (!personData || !personData.person) {
+        console.log('❌ No person data in FUB API response');
+        console.log('Response structure:', Object.keys(personData || {}));
+        await sendCriticalError(
+          { name: 'Unknown', id: personId }, 
+          stage, 
+          'No person data in FUB API response', 
+          null
+        );
+        return res.status(400).json({ error: 'No person data in response' });
+      }
+      
+      const person = personData.person;
+      const assignedUserId = person.assignedUserId || person.assignedUser?.id;
+      
+      console.log(`✅ Retrieved person: ${person.name} (ID: ${person.id})`);
+      console.log(`👤 Assigned User ID: ${assignedUserId}`);
+      console.log(`🏷️ Person Tags: ${person.tags?.join(', ') || 'None'}`);
+      console.log(`📊 New Stage: ${stage}`);
+      
+    } catch (apiError) {
+      console.error(`❌ FUB API Error:`, apiError.message);
+      console.error(`API Response Status:`, apiError.response?.status);
+      console.error(`API Response Data:`, JSON.stringify(apiError.response?.data, null, 2));
+      console.error(`API Request Headers:`, JSON.stringify(fubAPI.headers, null, 2));
+      
       await sendCriticalError(
         { name: 'Unknown', id: personId }, 
         stage, 
-        'Failed to fetch person data from FUB API', 
-        null
+        `FUB API Error: ${apiError.message}`, 
+        apiError
       );
-      return res.status(400).json({ error: 'Failed to get person data' });
+      return res.status(500).json({ error: 'FUB API request failed' });
     }
-    
-    const person = personData.person;
-    const assignedUserId = person.assignedUserId || person.assignedUser?.id;
-    
-    console.log(`✅ Retrieved person: ${person.name} (ID: ${person.id})`);
-    console.log(`👤 Assigned User ID: ${assignedUserId}`);
-    console.log(`🏷️ Person Tags: ${person.tags?.join(', ') || 'None'}`);
-    console.log(`📊 New Stage: ${stage}`);
     
     // Step 1: Check if this is a stage change that triggers deletion
     const isDeletionStage = ["lead", "attempted contact", "spoke with customer", "unresponsive", "nurture"].includes(normalize(stage));
