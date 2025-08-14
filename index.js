@@ -257,7 +257,12 @@ const extractPipelineFromTags = (tags) => {
 const shouldDeleteDeal = (deal, contactStage, availableStageNames) => {
   const dealStage = normalize(deal.stage || '');
   const pipelineName = normalize(deal.pipelineName || '');
-  const updatedStage = normalize(contactStage);
+  let updatedStage = normalize(contactStage);
+  
+  // For Commercial stages, remove the prefix before checking
+  if (contactStage.toLowerCase().startsWith('commercial - ')) {
+    updatedStage = normalize(contactStage.substring(13)); // Remove "COMMERCIAL - "
+  }
   
   // Don't delete from protected pipelines
   if (STAGE_MAPPING.protectedPipelines.some(pipeline => 
@@ -290,9 +295,11 @@ const shouldDeleteDeal = (deal, contactStage, availableStageNames) => {
   const normalizedAvailableStages = availableStageNames.map(normalize);
   if (!normalizedAvailableStages.includes(updatedStage)) {
     console.log(`🗑️ Deal ${deal.id} marked for deletion: contact stage "${updatedStage}" not found in pipeline stages`);
+    console.log(`📋 Available normalized stages: ${normalizedAvailableStages.join(', ')}`);
     return true;
   }
   
+  console.log(`✅ Deal ${deal.id} kept: stage "${updatedStage}" found in pipeline`);
   return false;
 };
 
