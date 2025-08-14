@@ -651,22 +651,11 @@ ${errorDetails}
 
 This requires immediate attention. The automation failed to process this contact properly.`;
 
-    // Send to owner for critical errors
-    if (CONFIG.SLACK_OWNER_USER_ID) {
-      await slackAPI.sendDM(CONFIG.SLACK_OWNER_USER_ID, message);
-    }
-    
-    // Also notify operations
-    if (CONFIG.SLACK_OPERATIONS_USER_ID) {
-      await slackAPI.sendDM(CONFIG.SLACK_OPERATIONS_USER_ID, message);
-    }
-    
-    // Send to notifications channel if configured
+    // Send to notifications channel
     if (CONFIG.SLACK_NOTIFICATIONS_CHANNEL_ID) {
       await slackAPI.sendChannelMessage(CONFIG.SLACK_NOTIFICATIONS_CHANNEL_ID, message);
+      console.log(`✅ Critical error notification sent to channel ${CONFIG.SLACK_NOTIFICATIONS_CHANNEL_ID}`);
     }
-    
-    console.log(`✅ Critical error notification sent for ${person.name}`);
     
   } catch (notificationError) {
     console.error('❌ Failed to send critical error notification:', notificationError);
@@ -680,26 +669,59 @@ async function sendPipelineDetectionFailure(person, stage, assignedUserId, pipel
 
 -AIDA`;
 
-    // Try to get assigned user info for Slack notification
+    // Try to get assigned user info and find their Slack ID
     try {
       const assignedUser = await fubAPI.get(`/users/${assignedUserId}`);
-      if (assignedUser?.slackUserId) {
-        await slackAPI.sendDM(assignedUser.slackUserId, message);
-        console.log(`✅ Pipeline detection failure notification sent to assigned user`);
+      if (assignedUser?.email) {
+        const slackUser = await findSlackUserByEmail(assignedUser.email);
+        if (slackUser && slackUser.id) {
+          await slackAPI.sendDM(slackUser.id, message);
+          console.log(`✅ Pipeline detection failure notification sent to assigned user via Slack`);
+          return; // Successfully sent to agent, no need for channel notification
+        }
       }
     } catch (error) {
-      console.log(`⚠️ Could not notify assigned user ${assignedUserId}`);
+      console.log(`⚠️ Could not notify assigned user ${assignedUserId} directly`);
     }
     
-    // Also notify operations
-    if (CONFIG.SLACK_OPERATIONS_USER_ID) {
-      await slackAPI.sendDM(CONFIG.SLACK_OPERATIONS_USER_ID, message);
-      console.log(`✅ Pipeline detection failure notification sent to operations`);
+    // Fallback: Send to notifications channel
+    if (CONFIG.SLACK_NOTIFICATIONS_CHANNEL_ID) {
+      const channelMessage = `📋 *Pipeline Detection Needed*
+
+*Contact:* ${person.name} (ID: ${person.id})
+*Stage:* ${stage}
+*Assigned User:* ${assignedUserId}
+
+${message}`;
+      
+      await slackAPI.sendChannelMessage(CONFIG.SLACK_NOTIFICATIONS_CHANNEL_ID, channelMessage);
+      console.log(`✅ Pipeline detection failure notification sent to channel`);
     }
     
   } catch (error) {
     console.error('❌ Failed to send pipeline detection failure notification:', error);
   }
+}
+
+// Helper function to find Slack user by email (borrowed from your automation.js)
+async function findSlackUserByEmail(email) {
+  try {
+    const response = await axios.get('https://slack.com/api/users.lookupByEmail', {
+      headers: {
+        'Authorization': `Bearer ${CONFIG.SLACK_BOT_TOKEN}`
+      },
+      params: { email: email },
+      timeout: 10000
+    });
+    
+    if (response.data.ok) {
+      return response.data.user;
+    }
+  } catch (error) {
+    console.log('Slack lookup failed:', error.message);
+  }
+  
+  return null;
 }
 
 async function createDuplicateDealsTask(person, contactStage, pipelineName, activeDeals) {
@@ -765,8 +787,8 @@ ${deals.map(deal => `• Deal ID: ${deal.id} - Stage: ${deal.stage}`).join('\n')
 
 Thanks!`;
 
-    if (CONFIG.SLACK_OPERATIONS_USER_ID) {
-      await slackAPI.sendDM(CONFIG.SLACK_OPERATIONS_USER_ID, message);
+    if (CONFIG.SLACK_NOTIFICATIONS_CHANNEL_ID) {
+      await slackAPI.sendChannelMessage(CONFIG.SLACK_NOTIFICATIONS_CHANNEL_ID, message);
       console.log(`✅ Duplicate deals warning sent for ${person.name}`);
     }
     
