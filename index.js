@@ -762,9 +762,6 @@ The agent just submitted a contact stage update to: ${contactStage} with a pipel
 
 AIDA detected multiple active deals in the same pipeline. Please review and delete the duplicate if needed. Make sure the remaining deal gets updated to the stage above.
 
-Active Deals Found:
-${activeDeals.map(deal => `• Deal ID: ${deal.id} - Stage: ${deal.stage}`).join('\n')}
-
 Next Steps:
 1. Review the deals in FUB
 2. Delete any duplicates
