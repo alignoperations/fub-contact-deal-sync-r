@@ -348,21 +348,11 @@ const formatStageForBuyer = (pipelineName, stageName) => {
   return stageName;
 };
 
-// Format commercial stages by removing prefix and handling mappings
+// Format commercial stages by removing prefix
 const formatStageForCommercial = (contactStage) => {
   // Contact stage has "COMMERCIAL - " prefix, remove it for deal stage
   if (contactStage.toLowerCase().startsWith('commercial - ')) {
-    const dealStage = contactStage.substring(13); // Remove "COMMERCIAL - " (13 characters)
-    
-    // Map stages that don't exist in Commercial pipeline to similar ones
-    const commercialStageMappings = {
-      'Spoke with customer': 'first appt held',
-      'Attempted contact': 'hit list',
-      'Lead': 'nurture'
-      // Add more mappings as needed
-    };
-    
-    return commercialStageMappings[dealStage] || dealStage;
+    return contactStage.substring(13); // Remove "COMMERCIAL - " (13 characters)
   }
   return contactStage; // No prefix found, return as-is
 };
