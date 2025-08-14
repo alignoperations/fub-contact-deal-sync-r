@@ -471,6 +471,7 @@ app.post('/webhook/person-stage-updated', async (req, res) => {
       
       if (dealsToDelete.length > 0) {
         console.log(`✅ Deletion complete. Deleted ${dealsToDelete.length} deals`);
+        // Removed Slack notification - only log to console for successful deletions
         return res.json({ 
           success: true, 
           message: `Deleted ${dealsToDelete.length} deals`,
@@ -560,11 +561,10 @@ app.post('/webhook/person-stage-updated', async (req, res) => {
     if (stageResult.shouldCreateDeal === "yes") {
       try {
         const createPayload = {
-          personId: parseInt(personId),
-          pipelineId: parseInt(pipelineId),
-          stageId: parseInt(stageResult.stageId),
-          assignedUserId: parseInt(assignedUserId),
-          name: person.name || 'Untitled Deal' // Add deal name as contact name
+          name: person.name || 'Untitled Deal',    // Deal name (required)
+          stageId: parseInt(stageResult.stageId),  // Stage ID (required)
+          peopleIds: [parseInt(personId)],         // Array of person IDs
+          userIds: [parseInt(assignedUserId)]      // Array of user IDs
         };
         console.log(`🆕 Creating deal with payload:`, createPayload);
         
@@ -582,7 +582,6 @@ app.post('/webhook/person-stage-updated', async (req, res) => {
         console.error(`❌ Failed to create deal:`, error.message);
         console.error(`❌ Error response:`, error.response?.data);
         console.error(`❌ Error status:`, error.response?.status);
-        console.error(`❌ Error headers:`, error.response?.headers);
         await sendCriticalError(person, stage, `Failed to create deal: ${error.response?.data ? JSON.stringify(error.response.data) : error.message}`, error, pipelineTags);
         return res.status(500).json({ error: 'Failed to create deal' });
       }
