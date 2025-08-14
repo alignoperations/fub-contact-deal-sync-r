@@ -487,70 +487,88 @@ app.post('/webhook/person-stage-updated', async (req, res) => {
       }
     }
     
-    // Step 4: Handle different pipeline scenarios
+    // Step 4: Enhanced pipeline logic based on stage matching
     if (pipelineTags.length === 0) {
       console.log('❌ No pipeline tags detected - sending notification');
       await sendPipelineDetectionFailure(person, stage, assignedUserId, pipelineTags);
       return res.json({ success: true, message: 'No pipeline tags detected, notification sent' });
     }
     
-    if (pipelineTags.length > 1) {
-      console.log('❌ Multiple pipeline tags detected - sending notification');
-      await sendPipelineDetectionFailure(person, stage, assignedUserId, pipelineTags);
-      return res.json({ success: true, message: 'Multiple pipeline tags detected, notification sent' });
-    }
+    // Check which pipelines the contact stage actually matches
+    const matchingPipelines = [];
     
-    // Step 5: Single pipeline tag - proceed with deal management
-    const pipelineTag = pipelineTags[0];
-    let pipelineId;
-    
-    if (pipelineTag === 'Commercial') {
-      // We need to find the correct Commercial pipeline ID
-      // Let's search for it by name instead of using hardcoded ID
+    for (const pipelineTag of pipelineTags) {
+      let testPipelineId;
+      let formattedStage = stage;
+      
+      // Get pipeline ID and format stage
+      if (pipelineTag === 'Commercial') {
+        try {
+          const allPipelines = await fubAPI.get('/pipelines');
+          const commercialPipeline = allPipelines.pipelines?.find(p => 
+            p.name && p.name.toLowerCase().includes('commercial')
+          );
+          if (commercialPipeline) {
+            testPipelineId = commercialPipeline.id;
+            formattedStage = formatStageForCommercial(stage);
+          }
+        } catch (error) {
+          console.error('❌ Failed to fetch Commercial pipeline:', error.message);
+          continue;
+        }
+      } else {
+        testPipelineId = PIPELINE_MAPPING[pipelineTag];
+        formattedStage = formatStageForBuyer(pipelineTag, stage);
+      }
+      
+      if (!testPipelineId) continue;
+      
+      // Get stages for this pipeline and check if contact stage matches
       try {
-        const allPipelines = await fubAPI.get('/pipelines');
-        const commercialPipeline = allPipelines.pipelines?.find(p => 
-          p.name && p.name.toLowerCase().includes('commercial')
-        );
+        const pipelineStages = await fubAPI.get(`/pipelines/${testPipelineId}`);
+        const stageNames = pipelineStages.stages?.map(s => s.name.toLowerCase()) || [];
         
-        if (commercialPipeline) {
-          pipelineId = commercialPipeline.id;
-          console.log(`🏢 Found Commercial pipeline: "${commercialPipeline.name}" (ID: ${pipelineId})`);
+        if (stageNames.includes(formattedStage.toLowerCase())) {
+          matchingPipelines.push({
+            tag: pipelineTag,
+            id: testPipelineId,
+            formattedStage: formattedStage
+          });
+          console.log(`✅ Stage "${formattedStage}" found in ${pipelineTag} pipeline`);
         } else {
-          console.log('❌ Could not find Commercial pipeline');
-          await sendCriticalError(person, stage, 'Commercial pipeline not found', null, pipelineTags);
-          return res.json({ success: true, message: 'Commercial pipeline not found' });
+          console.log(`❌ Stage "${formattedStage}" not found in ${pipelineTag} pipeline`);
         }
       } catch (error) {
-        console.error('❌ Failed to fetch pipelines:', error.message);
-        await sendCriticalError(person, stage, 'Failed to fetch pipelines', error, pipelineTags);
-        return res.json({ success: true, message: 'Failed to fetch pipelines' });
+        console.error(`❌ Failed to check ${pipelineTag} pipeline:`, error.message);
       }
-    } else {
-      pipelineId = PIPELINE_MAPPING[pipelineTag];
     }
     
-    console.log(`🎯 Using pipeline: ${pipelineTag} (ID: ${pipelineId})`);
-    
-    if (!pipelineId) {
-      console.log('❌ Unknown pipeline tag:', pipelineTag);
+    // Decision logic based on matching pipelines
+    if (matchingPipelines.length === 0) {
+      console.log('❌ Contact stage matches no pipeline stages - sending notification');
       await sendPipelineDetectionFailure(person, stage, assignedUserId, pipelineTags);
-      return res.json({ success: true, message: 'Unknown pipeline tag, notification sent' });
+      return res.json({ success: true, message: 'Stage matches no pipelines, notification sent' });
     }
     
-    // Get pipeline stages
-    console.log(`📊 Fetching pipeline stages for ${pipelineTag}...`);
+    if (matchingPipelines.length > 1) {
+      console.log('❌ Contact stage matches multiple pipeline stages - sending notification');
+      await sendPipelineDetectionFailure(person, stage, assignedUserId, pipelineTags);
+      return res.json({ success: true, message: 'Stage matches multiple pipelines, notification sent' });
+    }
+    
+    // Single matching pipeline - proceed with deal management
+    const selectedPipeline = matchingPipelines[0];
+    const pipelineTag = selectedPipeline.tag;
+    const pipelineId = selectedPipeline.id;
+    const formattedStage = selectedPipeline.formattedStage;
+    
+    console.log(`🎯 Using pipeline: ${pipelineTag} (ID: ${pipelineId}) for stage "${formattedStage}"`;
+    
+    
+    // Get pipeline stages (we already fetched them above, but get them again for the deal logic)
+    console.log(`📊 Using pipeline stages for ${pipelineTag}...`);
     const pipelineStages = await fubAPI.get(`/pipelines/${pipelineId}`);
     console.log(`✅ Pipeline ${pipelineId} has ${pipelineStages.stages?.length || 0} stages`);
-    
-    // Format stage name if needed (handle special mappings)
-    let formattedStage = stage;
-    if (pipelineTag === "Commercial") {
-      const originalStage = formattedStage;
-      formattedStage = formatStageForCommercial(stage);
-      console.log(`🔄 Commercial stage mapping: "${originalStage}" → "${formattedStage}"`);
-    }
-    // Note: Buyer pipeline no longer has special stage formatting
     
     // Get existing deals for this person and specific pipeline
     const existingDeals = await fubAPI.get(`/deals?pipelineId=${pipelineId}&personId=${personId}`);
@@ -761,6 +779,9 @@ async function createDuplicateDealsTask(person, contactStage, pipelineName, acti
 The agent just submitted a contact stage update to: ${contactStage} with a pipeline tag: ${pipelineName}.
 
 AIDA detected multiple active deals in the same pipeline. Please review and delete the duplicate if needed. Make sure the remaining deal gets updated to the stage above.
+
+Active Deals Found:
+${activeDeals.map(deal => `• Deal ID: ${deal.id} - Stage: ${deal.stage}`).join('\n')}
 
 Next Steps:
 1. Review the deals in FUB
