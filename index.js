@@ -18,7 +18,7 @@ const CONFIG = {
   ASANA_ASSIGNEE_GID: process.env.ASANA_ASSIGNEE_GID,
   FUB_BASE_URL: 'https://api.followupboss.com/v1',
   PORT: process.env.PORT || 3000,
-  COMMERCIAL_PIPELINE_ID: 5 // Commercial pipeline ID
+  COMMERCIAL_PIPELINE_ID: null // We need to find the correct ID
 };
 
 // Middleware
@@ -348,11 +348,21 @@ const formatStageForBuyer = (pipelineName, stageName) => {
   return stageName;
 };
 
-// Format commercial stages by removing prefix
+// Format commercial stages by removing prefix and handling mappings
 const formatStageForCommercial = (contactStage) => {
   // Contact stage has "COMMERCIAL - " prefix, remove it for deal stage
   if (contactStage.toLowerCase().startsWith('commercial - ')) {
-    return contactStage.substring(13); // Remove "COMMERCIAL - " (13 characters)
+    const dealStage = contactStage.substring(13); // Remove "COMMERCIAL - " (13 characters)
+    
+    // Map stages that don't exist in Commercial pipeline to similar ones
+    const commercialStageMappings = {
+      'Spoke with customer': 'first appt held',
+      'Attempted contact': 'hit list',
+      'Lead': 'nurture'
+      // Add more mappings as needed
+    };
+    
+    return commercialStageMappings[dealStage] || dealStage;
   }
   return contactStage; // No prefix found, return as-is
 };
@@ -498,7 +508,27 @@ app.post('/webhook/person-stage-updated', async (req, res) => {
     let pipelineId;
     
     if (pipelineTag === 'Commercial') {
-      pipelineId = CONFIG.COMMERCIAL_PIPELINE_ID;
+      // We need to find the correct Commercial pipeline ID
+      // Let's search for it by name instead of using hardcoded ID
+      try {
+        const allPipelines = await fubAPI.get('/pipelines');
+        const commercialPipeline = allPipelines.pipelines?.find(p => 
+          p.name && p.name.toLowerCase().includes('commercial')
+        );
+        
+        if (commercialPipeline) {
+          pipelineId = commercialPipeline.id;
+          console.log(`🏢 Found Commercial pipeline: "${commercialPipeline.name}" (ID: ${pipelineId})`);
+        } else {
+          console.log('❌ Could not find Commercial pipeline');
+          await sendCriticalError(person, stage, 'Commercial pipeline not found', null, pipelineTags);
+          return res.json({ success: true, message: 'Commercial pipeline not found' });
+        }
+      } catch (error) {
+        console.error('❌ Failed to fetch pipelines:', error.message);
+        await sendCriticalError(person, stage, 'Failed to fetch pipelines', error, pipelineTags);
+        return res.json({ success: true, message: 'Failed to fetch pipelines' });
+      }
     } else {
       pipelineId = PIPELINE_MAPPING[pipelineTag];
     }
