@@ -580,7 +580,10 @@ app.post('/webhook/person-stage-updated', async (req, res) => {
         });
       } catch (error) {
         console.error(`❌ Failed to create deal:`, error.message);
-        await sendCriticalError(person, stage, `Failed to create deal`, error, pipelineTags);
+        console.error(`❌ Error response:`, error.response?.data);
+        console.error(`❌ Error status:`, error.response?.status);
+        console.error(`❌ Error headers:`, error.response?.headers);
+        await sendCriticalError(person, stage, `Failed to create deal: ${error.response?.data ? JSON.stringify(error.response.data) : error.message}`, error, pipelineTags);
         return res.status(500).json({ error: 'Failed to create deal' });
       }
     }
