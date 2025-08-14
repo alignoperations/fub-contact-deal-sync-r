@@ -627,92 +627,46 @@ app.post('/webhook/person-stage-updated', async (req, res) => {
       }
     }
     
-    // Step 4: Enhanced pipeline logic based on stage matching
-    if (pipelineTags.length === 0) {
-      console.log('❌ No pipeline tags detected - sending notification');
-      await sendPipelineDetectionFailure(person, stage, assignedUserId, pipelineTags);
-      return res.json({ success: true, message: 'No pipeline tags detected, notification sent' });
-    }
+    // Step 5: Handle remaining scenarios for single pipeline tags
+    const pipelineTag = pipelineTags[0];
+    let pipelineId;
     
-    // Check which pipelines the contact stage actually matches
-    const matchingPipelines = [];
-    
-    for (const pipelineTag of pipelineTags) {
-      let testPipelineId;
-      let formattedStage = stage;
-      
-      // Get pipeline ID and format stage
-      if (pipelineTag === 'Commercial') {
-        try {
-          const allPipelines = await fubAPI.get('/pipelines');
-          const commercialPipeline = allPipelines.pipelines?.find(p => 
-            p.name && p.name.toLowerCase().includes('commercial')
-          );
-          if (commercialPipeline) {
-            testPipelineId = commercialPipeline.id;
-            formattedStage = formatStageForCommercial(stage);
-          }
-        } catch (error) {
-          console.error('❌ Failed to fetch Commercial pipeline:', error.message);
-          continue;
-        }
-      } else {
-        testPipelineId = PIPELINE_MAPPING[pipelineTag];
-        formattedStage = formatStageForBuyer(pipelineTag, stage);
-      }
-      
-      if (!testPipelineId) continue;
-      
-      // Get stages for this pipeline and check if contact stage matches
+    if (pipelineTag === 'Commercial') {
       try {
-        const pipelineStages = await fubAPI.get(`/pipelines/${testPipelineId}`);
-        const stageNames = pipelineStages.stages?.map(s => s.name.toLowerCase()) || [];
-        
-        if (stageNames.includes(formattedStage.toLowerCase())) {
-          matchingPipelines.push({
-            tag: pipelineTag,
-            id: testPipelineId,
-            formattedStage: formattedStage
-          });
-          console.log(`✅ Stage "${formattedStage}" found in ${pipelineTag} pipeline`);
+        const allPipelines = await fubAPI.get('/pipelines');
+        const commercialPipeline = allPipelines.pipelines?.find(p => 
+          p.name && p.name.toLowerCase().includes('commercial')
+        );
+        if (commercialPipeline) {
+          pipelineId = commercialPipeline.id;
         } else {
-          console.log(`❌ Stage "${formattedStage}" not found in ${pipelineTag} pipeline`);
+          await sendCriticalError(person, stage, 'Commercial pipeline not found', null, pipelineTags);
+          return res.json({ success: true, message: 'Commercial pipeline not found' });
         }
       } catch (error) {
-        console.error(`❌ Failed to check ${pipelineTag} pipeline:`, error.message);
+        await sendCriticalError(person, stage, 'Failed to fetch pipelines', error, pipelineTags);
+        return res.json({ success: true, message: 'Failed to fetch pipelines' });
       }
+    } else {
+      pipelineId = PIPELINE_MAPPING[pipelineTag];
     }
     
-    // Decision logic based on matching pipelines
-    if (matchingPipelines.length === 0) {
-      console.log('❌ Contact stage matches no pipeline stages - sending notification');
+    if (!pipelineId) {
       await sendPipelineDetectionFailure(person, stage, assignedUserId, pipelineTags);
-      return res.json({ success: true, message: 'Stage matches no pipelines, notification sent' });
+      return res.json({ success: true, message: 'Unknown pipeline tag, notification sent' });
     }
     
-    if (matchingPipelines.length > 1) {
-      console.log('❌ Contact stage matches multiple pipeline stages - sending notification');
-      await sendPipelineDetectionFailure(person, stage, assignedUserId, pipelineTags);
-      return res.json({ success: true, message: 'Stage matches multiple pipelines, notification sent' });
-    }
+    console.log(`🎯 Using single pipeline: ${pipelineTag} (ID: ${pipelineId})`);
     
-    // Single matching pipeline - proceed with deal management
-    const selectedPipeline = matchingPipelines[0];
-    const pipelineTag = selectedPipeline.tag;
-    const pipelineId = selectedPipeline.id;
-    const formattedStage = selectedPipeline.formattedStage;
-    
-    console.log(`🎯 Using pipeline: ${pipelineTag} (ID: ${pipelineId}) for stage "${formattedStage}"`;
-    
-    
-    // Get pipeline stages (we already fetched them above, but get them again for the deal logic)
-    console.log(`📊 Using pipeline stages for ${pipelineTag}...`);
+    // Get pipeline stages
     const pipelineStages = await fubAPI.get(`/pipelines/${pipelineId}`);
-    console.log(`✅ Pipeline ${pipelineId} has ${pipelineStages.stages?.length || 0} stages`);
+    let formattedStage = stage;
+    if (pipelineTag === "Commercial") {
+      formattedStage = formatStageForCommercial(stage);
+    }
     
     // Get existing deals for this person and specific pipeline
     const existingDeals = await fubAPI.get(`/deals?pipelineId=${pipelineId}&personId=${personId}`);
-    console.log(`✅ Found ${existingDeals.deals?.length || 0} existing deals for ${pipelineTag} pipeline`);
     
     // Check for duplicate active deals in this pipeline
     if (existingDeals.deals && existingDeals.deals.length > 0) {
@@ -916,9 +870,6 @@ The agent just submitted a contact stage update to: ${contactStage} with a pipel
 
 AIDA detected multiple active deals in the same pipeline. Please review and delete the duplicate if needed. Make sure the remaining deal gets updated to the stage above.
 
-Active Deals Found:
-${activeDeals.map(deal => `• Deal ID: ${deal.id} - Stage: ${deal.stage}`).join('\n')}
-
 Next Steps:
 1. Review the deals in FUB
 2. Delete any duplicates
@@ -944,8 +895,8 @@ Please manually review this contact for duplicate deals.
 
 *Error:* ${error.message}`;
 
-      if (CONFIG.SLACK_OPERATIONS_USER_ID) {
-        await slackAPI.sendDM(CONFIG.SLACK_OPERATIONS_USER_ID, fallbackMessage);
+      if (CONFIG.SLACK_NOTIFICATIONS_CHANNEL_ID) {
+        await slackAPI.sendChannelMessage(CONFIG.SLACK_NOTIFICATIONS_CHANNEL_ID, fallbackMessage);
       }
     } catch (slackError) {
       console.error('❌ Failed to send fallback Slack notification:', slackError);
