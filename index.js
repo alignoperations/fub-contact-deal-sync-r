@@ -722,7 +722,6 @@ app.post('/webhook/person-stage-updated', async (req, res) => {
       if (activeDeals.length > 1) {
         console.log(`⚠️ Multiple active deals detected in ${pipelineTag} pipeline - creating Asana task`);
         await createDuplicateDealsTask(person, stage, pipelineTag, activeDeals);
-        // Continue processing - don't stop the workflow
       }
     }
     
@@ -734,10 +733,7 @@ app.post('/webhook/person-stage-updated', async (req, res) => {
       dealID: existingDeals.deals?.map(d => d.id).join(',') || ''
     });
     
-    console.log(`🎯 Stage mapping result:`, stageResult);
-    
     if (stageResult.stageId === "0") {
-      console.log(`❌ Stage "${formattedStage}" not found in pipeline ${pipelineTag}`);
       await sendCriticalError(person, stage, `Stage "${formattedStage}" not found in pipeline ${pipelineTag}`, null, pipelineTags);
       return res.json({ success: true, message: 'Stage not found in pipeline' });
     }
