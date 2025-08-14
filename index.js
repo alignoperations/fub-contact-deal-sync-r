@@ -445,7 +445,147 @@ app.post('/webhook/person-stage-updated', async (req, res) => {
       console.log(`🏷️ Extracted pipeline tags from [${person.tags?.join(', ') || 'None'}]: [${pipelineTags.join(', ')}]`);
     }
     
-    // Step 3: Enhanced deal deletion logic
+    // Step 3: Enhanced pipeline logic based on stage matching (MOVED UP)
+    if (pipelineTags.length === 0) {
+      console.log('❌ No pipeline tags detected - sending notification');
+      await sendPipelineDetectionFailure(person, stage, assignedUserId, pipelineTags);
+      return res.json({ success: true, message: 'No pipeline tags detected, notification sent' });
+    }
+    
+    // Check which pipelines the contact stage actually matches
+    const matchingPipelines = [];
+    
+    for (const pipelineTag of pipelineTags) {
+      let testPipelineId;
+      let formattedStage = stage;
+      
+      // Get pipeline ID and format stage
+      if (pipelineTag === 'Commercial') {
+        try {
+          const allPipelines = await fubAPI.get('/pipelines');
+          const commercialPipeline = allPipelines.pipelines?.find(p => 
+            p.name && p.name.toLowerCase().includes('commercial')
+          );
+          if (commercialPipeline) {
+            testPipelineId = commercialPipeline.id;
+            formattedStage = formatStageForCommercial(stage);
+          }
+        } catch (error) {
+          console.error('❌ Failed to fetch Commercial pipeline:', error.message);
+          continue;
+        }
+      } else {
+        testPipelineId = PIPELINE_MAPPING[pipelineTag];
+        formattedStage = formatStageForBuyer(pipelineTag, stage);
+      }
+      
+      if (!testPipelineId) continue;
+      
+      // Get stages for this pipeline and check if contact stage matches
+      try {
+        const pipelineStages = await fubAPI.get(`/pipelines/${testPipelineId}`);
+        const stageNames = pipelineStages.stages?.map(s => s.name.toLowerCase()) || [];
+        
+        if (stageNames.includes(formattedStage.toLowerCase())) {
+          matchingPipelines.push({
+            tag: pipelineTag,
+            id: testPipelineId,
+            formattedStage: formattedStage
+          });
+          console.log(`✅ Stage "${formattedStage}" found in ${pipelineTag} pipeline`);
+        } else {
+          console.log(`❌ Stage "${formattedStage}" not found in ${pipelineTag} pipeline`);
+        }
+      } catch (error) {
+        console.error(`❌ Failed to check ${pipelineTag} pipeline:`, error.message);
+      }
+    }
+    
+    // Decision logic based on matching pipelines
+    if (matchingPipelines.length === 0) {
+      console.log('❌ Contact stage matches no pipeline stages - proceed with deletion logic');
+      // Continue to deletion logic below
+    } else if (matchingPipelines.length > 1) {
+      console.log('❌ Contact stage matches multiple pipeline stages - sending notification');
+      await sendPipelineDetectionFailure(person, stage, assignedUserId, pipelineTags);
+      return res.json({ success: true, message: 'Stage matches multiple pipelines, notification sent' });
+    } else {
+      // Single matching pipeline - skip deletion and go straight to deal management
+      const selectedPipeline = matchingPipelines[0];
+      const pipelineTag = selectedPipeline.tag;
+      const pipelineId = selectedPipeline.id;
+      const formattedStage = selectedPipeline.formattedStage;
+      
+      console.log(`🎯 Using pipeline: ${pipelineTag} (ID: ${pipelineId}) for stage "${formattedStage}"`);
+      
+      // Skip deletion logic and jump to deal management
+      const pipelineStages = await fubAPI.get(`/pipelines/${pipelineId}`);
+      const existingDeals = await fubAPI.get(`/deals?pipelineId=${pipelineId}&personId=${personId}`);
+      
+      // Check for duplicate active deals in this pipeline
+      if (existingDeals.deals && existingDeals.deals.length > 0) {
+        const activeDeals = existingDeals.deals.filter(isDealActive);
+        if (activeDeals.length > 1) {
+          await createDuplicateDealsTask(person, stage, pipelineTag, activeDeals);
+        }
+      }
+      
+      // Find the stage ID and handle deal creation/update
+      const stageResult = findStageId({
+        stageName: formattedStage,
+        stageNames: pipelineStages.stages?.map(s => s.name).join(',') || '',
+        stageIds: pipelineStages.stages?.map(s => s.id).join(',') || '',
+        dealID: existingDeals.deals?.map(d => d.id).join(',') || ''
+      });
+      
+      if (stageResult.stageId === "0") {
+        await sendCriticalError(person, stage, `Stage "${formattedStage}" not found in pipeline ${pipelineTag}`, null, pipelineTags);
+        return res.json({ success: true, message: 'Stage not found in pipeline' });
+      }
+      
+      // Handle deal creation/update
+      if (stageResult.shouldCreateDeal === "yes") {
+        try {
+          const createPayload = {
+            name: person.name || 'Untitled Deal',
+            stageId: parseInt(stageResult.stageId),
+            peopleIds: [parseInt(personId)],
+            userIds: [parseInt(assignedUserId)]
+          };
+          const newDeal = await fubAPI.post('/deals', createPayload);
+          return res.json({ 
+            success: true, 
+            message: 'Deal created', 
+            dealId: newDeal.id,
+            pipelineId: parseInt(pipelineId),
+            stageId: parseInt(stageResult.stageId)
+          });
+        } catch (error) {
+          await sendCriticalError(person, stage, `Failed to create deal: ${error.response?.data ? JSON.stringify(error.response.data) : error.message}`, error, pipelineTags);
+          return res.status(500).json({ error: 'Failed to create deal' });
+        }
+      }
+      
+      if (stageResult.shouldUpdateDeal === "yes") {
+        try {
+          const dealId = existingDeals.deals[0].id;
+          await fubAPI.put(`/deals/${dealId}`, { stageId: parseInt(stageResult.stageId) });
+          return res.json({ 
+            success: true, 
+            message: 'Deal updated', 
+            dealId: dealId,
+            newStageId: parseInt(stageResult.stageId)
+          });
+        } catch (error) {
+          await sendCriticalError(person, stage, `Failed to update deal: ${error.response?.data ? JSON.stringify(error.response.data) : error.message}`, error, pipelineTags);
+          return res.status(500).json({ error: 'Failed to update deal' });
+        }
+      }
+      
+      return res.json({ success: true, message: 'Deal processing complete' });
+    }
+    
+    // Step 4: Enhanced deal deletion logic (only runs if no stage matches found)
     if (allDeals.deals && allDeals.deals.length > 0) {
       const dealsToDelete = [];
       
@@ -562,7 +702,7 @@ app.post('/webhook/person-stage-updated', async (req, res) => {
     const pipelineId = selectedPipeline.id;
     const formattedStage = selectedPipeline.formattedStage;
     
-    console.log(`🎯 Using pipeline: ${pipelineTag} (ID: ${pipelineId}) for stage "${formattedStage}"`);
+    console.log(`🎯 Using pipeline: ${pipelineTag} (ID: ${pipelineId}) for stage "${formattedStage}"`;
     
     
     // Get pipeline stages (we already fetched them above, but get them again for the deal logic)
