@@ -562,7 +562,7 @@ app.post('/webhook/person-stage-updated', async (req, res) => {
     const pipelineId = selectedPipeline.id;
     const formattedStage = selectedPipeline.formattedStage;
     
-    console.log(`🎯 Using pipeline: ${pipelineTag} (ID: ${pipelineId}) for stage "${formattedStage}"`;
+    console.log(`🎯 Using pipeline: ${pipelineTag} (ID: ${pipelineId}) for stage "${formattedStage}"`);
     
     
     // Get pipeline stages (we already fetched them above, but get them again for the deal logic)
