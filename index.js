@@ -6,18 +6,36 @@ const axios = require('axios');
 const express = require('express');
 const app = express();
 
-// Configuration
+// Configuration - Updated to use environment variables
 const CONFIG = {
-  FUB_API_KEY: process.env.FUB_API_KEY,
+  FUB_API_KEY: process.env.FOLLOWUPBOSS_API_KEY || process.env.FUB_API_KEY,
   SLACK_BOT_TOKEN: process.env.SLACK_BOT_TOKEN,
-  SLACK_OPERATIONS_USER_ID: process.env.SLACK_OPERATIONS_USER_ID, // operations@alignteam.com
-  SLACK_OWNER_USER_ID: process.env.SLACK_OWNER_USER_ID, // Your user ID for critical errors
+  SLACK_OPERATIONS_USER_ID: process.env.SLACK_OPERATIONS_USER_ID,
+  SLACK_OWNER_USER_ID: process.env.SLACK_OWNER_USER_ID,
+  SLACK_NOTIFICATIONS_CHANNEL_ID: process.env.SLACK_NOTIFICATIONS_CHANNEL_ID,
+  ASANA_ACCESS_TOKEN: process.env.ASANA_ACCESS_TOKEN,
+  ASANA_PROJECT_ID: process.env.ASANA_PROJECT_ID,
+  ASANA_ASSIGNEE_GID: process.env.ASANA_ASSIGNEE_GID,
   FUB_BASE_URL: 'https://api.followupboss.com/v1',
-  PORT: process.env.PORT || 3000
+  PORT: process.env.PORT || 3000,
+  COMMERCIAL_PIPELINE_ID: 5 // Commercial pipeline ID
 };
 
 // Middleware
 app.use(express.json());
+
+// In-memory deduplication store
+const processedEvents = new Map();
+
+// Clean up old events every 5 minutes
+setInterval(() => {
+  const fiveMinutesAgo = Date.now() - (5 * 60 * 1000);
+  for (const [eventId, timestamp] of processedEvents.entries()) {
+    if (timestamp < fiveMinutesAgo) {
+      processedEvents.delete(eventId);
+    }
+  }
+}, 5 * 60 * 1000);
 
 // FUB API Helper with Basic Auth
 const fubAPI = {
@@ -58,69 +76,162 @@ const fubAPI = {
   }
 };
 
-// Slack API Helper
+// Updated Slack API Helper
 const slackAPI = {
   async sendDM(userId, message) {
     try {
       const response = await axios.post('https://slack.com/api/chat.postMessage', {
         channel: userId,
-        text: message,
-        mrkdwn: true
+        text: message
       }, {
         headers: {
           'Authorization': `Bearer ${CONFIG.SLACK_BOT_TOKEN}`,
           'Content-Type': 'application/json'
         }
       });
+
+      if (!response.data.ok) {
+        throw new Error(`Slack API error: ${response.data.error}`);
+      }
+
+      console.log(`✅ Slack DM sent to ${userId}`);
       return response.data;
     } catch (error) {
-      console.error('Slack API error:', error.response?.data || error.message);
+      console.error(`❌ Failed to send Slack DM to ${userId}:`, error.message);
+      throw error;
+    }
+  },
+
+  async sendChannelMessage(channelId, message) {
+    try {
+      const response = await axios.post('https://slack.com/api/chat.postMessage', {
+        channel: channelId,
+        text: message
+      }, {
+        headers: {
+          'Authorization': `Bearer ${CONFIG.SLACK_BOT_TOKEN}`,
+          'Content-Type': 'application/json'
+        }
+      });
+
+      if (!response.data.ok) {
+        throw new Error(`Slack API error: ${response.data.error}`);
+      }
+
+      console.log(`✅ Slack message sent to channel ${channelId}`);
+      return response.data;
+    } catch (error) {
+      console.error(`❌ Failed to send Slack message to channel ${channelId}:`, error.message);
       throw error;
     }
   }
 };
 
-// Stage mapping configuration
-const STAGE_MAPPING = {
-  stagesToKeepByPipeline: {
-    buyer: [
-      "attorney review", "under contract", "closed",
-      "offer rejected", "fell through"
-    ],
-    listing: [
-      "listing agreement", "pre-listing", "active off-market", 
-      "active listing", "attorney review", "under contract", 
-      "closed", "temporarily off market", "expired", "cancelled",
-      "fell through"
-    ],
-    landlord: [
-      "listing agreement", "pre-listing", "active off-market",
-      "active listing", "application accepted", "closed", 
-      "expired", "cancelled", "fell through"
-    ],
-    tenant: [
-      "application accepted", "closed", "application rejected", 
-      "fell through"
-    ]
+// Updated Asana API Helper
+const asanaAPI = {
+  async createTask(title, description, assigneeGid = CONFIG.ASANA_ASSIGNEE_GID) {
+    try {
+      const taskData = {
+        data: {
+          name: title,
+          notes: description,
+          projects: [CONFIG.ASANA_PROJECT_ID]
+        }
+      };
+
+      // Only add assignee if GID is provided
+      if (assigneeGid) {
+        taskData.data.assignee = assigneeGid;
+      }
+
+      const response = await axios.post('https://app.asana.com/api/1.0/tasks', taskData, {
+        headers: {
+          'Authorization': `Bearer ${CONFIG.ASANA_ACCESS_TOKEN}`,
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        }
+      });
+      
+      console.log(`✅ Created Asana task: ${response.data.data.gid}`);
+      return response.data;
+    } catch (error) {
+      console.error('❌ Asana API error:', {
+        status: error.response?.status,
+        statusText: error.response?.statusText,
+        data: error.response?.data,
+        message: error.message
+      });
+      throw error;
+    }
   },
+
+  // Test connection and permissions
+  async testConnection() {
+    try {
+      const response = await axios.get('https://app.asana.com/api/1.0/users/me', {
+        headers: {
+          'Authorization': `Bearer ${CONFIG.ASANA_ACCESS_TOKEN}`,
+          'Accept': 'application/json'
+        }
+      });
+      
+      console.log('✅ Asana connection successful:', response.data.data.name);
+      return true;
+    } catch (error) {
+      console.error('❌ Asana connection failed:', error.response?.data || error.message);
+      return false;
+    }
+  }
+};
+
+// Check if deal should be counted as "active" (not protected/closed)
+const isDealActive = (deal) => {
+  const dealStage = normalize(deal.stage || '');
   
-  alwaysKeepStages: [
-    "closed", "2023 closed", "2022 closed", "2021 closed"
+  // Not active if stage contains "closed"
+  if (dealStage.includes('closed')) {
+    return false;
+  }
+  
+  // Not active if in protected stages
+  if (STAGE_MAPPING.protectedStages.some(stage => 
+    dealStage.includes(normalize(stage)))) {
+    return false;
+  }
+  
+  return true;
+};
+
+// Enhanced Stage mapping configuration
+const STAGE_MAPPING = {
+  // Stages to preserve when deleting deals
+  protectedStages: [
+    "offer rejected", "client not taken", "working with another agent", 
+    "fall through", "expired", "cancelled", "listing agreement", 
+    "pre-listing", "active listing", "active off-market", 
+    "application accepted", "attorney review", "under contract", 
+    "showing homes", "offers submitted", "submitting applications"
   ],
   
-  pipelinesToIgnore: [
-    "agent recruiting", "outgoing referral", "investments acquisition", 
-    "commercial"
+  // Pipelines to never delete deals from
+  protectedPipelines: [
+    "agent recruiting", "outgoing referral"
+  ],
+  
+  // Deletion trigger stages
+  deletionStages: [
+    "lead", "attempted contact", "spoke with customer", "unresponsive", "nurture"
   ]
 };
 
-// Pipeline tag mapping
+// Pipeline tag mapping (Commercial excluded from tag detection)
 const PIPELINE_MAPPING = {
   'Seller': 2,
   'Buyer': 1,
   'Landlord': 3,
   'Tenant': 4,
   'Listing': 2
+  // Note: Commercial (ID: 5) is detected by stage prefix, not tags
 };
 
 // Utility functions
@@ -142,32 +253,47 @@ const extractPipelineFromTags = (tags) => {
   return [...new Set(pipelineTags)]; // Remove duplicates
 };
 
-const shouldDeleteDeal = (inputData) => {
-  const { stageIds, stageNames, pipelineNames, updatedStage, dealIds } = inputData;
-  const dealIdsToDelete = [];
+// Enhanced deal deletion logic
+const shouldDeleteDeal = (deal, contactStage, availableStageNames) => {
+  const dealStage = normalize(deal.stage || '');
+  const pipelineName = normalize(deal.pipelineName || '');
+  const updatedStage = normalize(contactStage);
   
-  // Check if we should delete deals based on stage change
-  if (["lead", "attempted contact", "spoke with customer", "unresponsive", "nurture"].includes(updatedStage)) {
-    for (let i = 0; i < dealIds.length; i++) {
-      const dealId = dealIds[i]?.trim();
-      const stage = normalize(stageNames[i]);
-      const pipeline = normalize(pipelineNames[i]);
-      
-      if (!dealId || STAGE_MAPPING.pipelinesToIgnore.includes(pipeline)) {
-        continue;
-      }
-      
-      const allowedStages = STAGE_MAPPING.stagesToKeepByPipeline[pipeline] || [];
-      const normalizedAllowedStages = allowedStages.map(normalize);
-      
-      if (!normalizedAllowedStages.includes(stage) && 
-          !STAGE_MAPPING.alwaysKeepStages.includes(stage)) {
-        dealIdsToDelete.push(dealId);
-      }
-    }
+  // Don't delete from protected pipelines
+  if (STAGE_MAPPING.protectedPipelines.some(pipeline => 
+    pipelineName.includes(normalize(pipeline)))) {
+    console.log(`🛡️ Deal ${deal.id} in protected pipeline: ${pipelineName}`);
+    return false;
   }
   
-  return dealIdsToDelete;
+  // Don't delete if deal stage contains "closed"
+  if (dealStage.includes('closed')) {
+    console.log(`🛡️ Deal ${deal.id} is closed: ${dealStage}`);
+    return false;
+  }
+  
+  // Don't delete protected stages
+  if (STAGE_MAPPING.protectedStages.some(stage => 
+    dealStage.includes(normalize(stage)))) {
+    console.log(`🛡️ Deal ${deal.id} in protected stage: ${dealStage}`);
+    return false;
+  }
+  
+  // Delete if contact stage is a deletion trigger AND
+  // the contact stage doesn't match any known deal stages
+  if (STAGE_MAPPING.deletionStages.includes(updatedStage)) {
+    console.log(`🗑️ Deal ${deal.id} marked for deletion: contact in deletion stage "${updatedStage}"`);
+    return true;
+  }
+  
+  // Delete if contact stage doesn't match any available deal stages
+  const normalizedAvailableStages = availableStageNames.map(normalize);
+  if (!normalizedAvailableStages.includes(updatedStage)) {
+    console.log(`🗑️ Deal ${deal.id} marked for deletion: contact stage "${updatedStage}" not found in pipeline stages`);
+    return true;
+  }
+  
+  return false;
 };
 
 const findStageId = (inputData) => {
@@ -182,9 +308,9 @@ const findStageId = (inputData) => {
   const index = namesArray.indexOf(inputName);
   const matchedId = index !== -1 ? idsArray[index] : "0";
   
-  console.log(`Stage mapping: "${inputName}" → Stage ID: ${matchedId}`);
-  console.log(`Available stages: ${namesArray.join(', ')}`);
-  console.log(`Available stage IDs: ${idsArray.join(', ')}`);
+  console.log(`🎯 Stage mapping: "${inputName}" → Stage ID: ${matchedId}`);
+  console.log(`📋 Available stages: ${namesArray.join(', ')}`);
+  console.log(`🔢 Available stage IDs: ${idsArray.join(', ')}`);
   
   let shouldCreateDeal = "no";
   let shouldUpdateDeal = "no";
@@ -194,21 +320,18 @@ const findStageId = (inputData) => {
   if (dealIdsArray.length === 0) {
     // No deals at all → Create
     shouldCreateDeal = "yes";
-    console.log(`Decision: CREATE (no existing deals)`);
+    console.log(`✅ Decision: CREATE (no existing deals)`);
   } else if (dealIdsArray.length > 1) {
     // Multiple deals → Skip
     skipUpdate = "yes";
-    console.log(`Decision: SKIP (multiple deals: ${dealIdsArray.length})`);
+    console.log(`⚠️ Decision: SKIP (multiple deals: ${dealIdsArray.length})`);
   } else {
     // One deal → check if it matches or update
-    if (matchedId === "0" && STAGE_MAPPING.alwaysKeepStages.includes(inputName)) {
-      skipUpdate = "yes";
-      console.log(`Decision: SKIP (stage not found but in always keep list)`);
-    } else if (matchedId === "0") {
-      console.log(`Decision: ERROR (stage not found and not in always keep list)`);
+    if (matchedId === "0") {
+      console.log(`❌ Decision: ERROR (stage not found in pipeline)`);
     } else {
       shouldUpdateDeal = "yes";
-      console.log(`Decision: UPDATE (one deal exists, stage found)`);
+      console.log(`🔄 Decision: UPDATE (one deal exists, stage found)`);
     }
   }
   
@@ -221,15 +344,24 @@ const findStageId = (inputData) => {
 };
 
 const formatStageForBuyer = (pipelineName, stageName) => {
-  // When contact stage is "A (<30)", the deal stage should be "A (<30) + Agency"
-  if (pipelineName === "Buyer" && stageName === "A (<30)") {
-    return "A (<30) + Agency";
+  // No special formatting needed for Buyer pipeline anymore
+  return stageName;
+};
+
+// Format commercial stages by removing prefix
+const formatStageForCommercial = (contactStage) => {
+  // Contact stage has "COMMERCIAL - " prefix, remove it for deal stage
+  if (contactStage.toLowerCase().startsWith('commercial - ')) {
+    return contactStage.substring(13); // Remove "COMMERCIAL - " (13 characters)
   }
-  return stageName; // Return original stage name for all other cases
+  return contactStage; // No prefix found, return as-is
 };
 
 // Main webhook handler
 app.post('/webhook/person-stage-updated', async (req, res) => {
+  let person = null; // Declare in function scope
+  let assignedUserId = null;
+  
   try {
     // Log the entire webhook payload for debugging
     console.log('=== WEBHOOK RECEIVED ===');
@@ -237,148 +369,176 @@ app.post('/webhook/person-stage-updated', async (req, res) => {
     console.log('========================');
     
     // FUB webhook structure: { event, resourceIds, data: { stage }, uri }
-    const { event, resourceIds, data, uri } = req.body;
+    const { event, resourceIds, data, uri, eventId } = req.body;
+    
+    // Deduplication check
+    if (eventId && processedEvents.has(eventId)) {
+      console.log(`🔄 Duplicate event detected: ${eventId} - skipping`);
+      return res.json({ success: true, message: 'Duplicate event ignored' });
+    }
     
     if (event !== 'peopleStageUpdated' || !resourceIds || !data || !data.stage) {
       console.log('❌ Invalid webhook payload structure');
-      console.log('Event:', event);
-      console.log('ResourceIds:', resourceIds);
-      console.log('Data:', data);
       return res.status(400).json({ error: 'Invalid webhook payload' });
     }
     
-    const personId = resourceIds[0]; // Get the person ID from resourceIds
-    const stage = data.stage; // Get the new stage from data
+    // Mark event as processed
+    if (eventId) {
+      processedEvents.set(eventId, Date.now());
+    }
+    
+    const personId = resourceIds[0];
+    const stage = data.stage;
     
     console.log(`✅ Processing stage update for Person ID ${personId}: ${stage}`);
     
-    // Get the full person data from FUB API using the person ID
+    // Get the full person data from FUB API
     console.log(`🔍 Fetching person data from FUB API for ID: ${personId}`);
-    try {
-      const personData = await fubAPI.get(`/people/${personId}`);
-      console.log(`📊 FUB API Response:`, JSON.stringify(personData, null, 2));
-      
-      // FUB API returns person data directly, not wrapped in { person: ... }
-      if (!personData || !personData.id) {
-        console.log('❌ No person data in FUB API response');
-        console.log('Response structure:', Object.keys(personData || {}));
-        await sendCriticalError(
-          { name: 'Unknown', id: personId }, 
-          stage, 
-          'No person data in FUB API response', 
-          null
-        );
-        return res.status(400).json({ error: 'No person data in response' });
-      }
-      
-      // Person data is directly in the response
-      const person = personData;
-      const assignedUserId = person.assignedUserId;
-      
-      console.log(`✅ Retrieved person: ${person.name} (ID: ${person.id})`);
-      console.log(`👤 Assigned User ID: ${assignedUserId}`);
-      console.log(`🏷️ Person Tags: ${person.tags?.join(', ') || 'None'}`);
-      console.log(`📊 New Stage: ${stage}`);
-      
-    } catch (apiError) {
-      console.error(`❌ FUB API Error:`, apiError.message);
-      console.error(`API Response Status:`, apiError.response?.status);
-      console.error(`API Response Data:`, JSON.stringify(apiError.response?.data, null, 2));
-      console.error(`API Request Headers:`, JSON.stringify(fubAPI.headers, null, 2));
-      
+    
+    const personData = await fubAPI.get(`/people/${personId}`);
+    
+    if (!personData || !personData.id) {
+      console.log('❌ No person data in FUB API response');
       await sendCriticalError(
         { name: 'Unknown', id: personId }, 
         stage, 
-        `FUB API Error: ${apiError.message}`, 
-        apiError
+        'No person data in FUB API response', 
+        null,
+        []
       );
-      return res.status(500).json({ error: 'FUB API request failed' });
+      return res.status(400).json({ error: 'No person data in response' });
     }
     
-    // Step 1: Check if this is a stage change that triggers deletion
-    const isDeletionStage = ["lead", "attempted contact", "spoke with customer", "unresponsive", "nurture"].includes(normalize(stage));
-    console.log(`Stage "${stage}" is deletion stage: ${isDeletionStage}`);
+    // Person data is directly in the response
+    person = personData;
+    assignedUserId = person.assignedUserId;
     
-    if (isDeletionStage) {
-      // Get existing deals for this person
-      const deals = await fubAPI.get(`/deals?personId=${person.id}`);
-      console.log(`Found ${deals.deals?.length || 0} existing deals for person ${person.id}`);
+    console.log(`✅ Retrieved person: ${person.name} (ID: ${person.id})`);
+    console.log(`👤 Assigned User ID: ${assignedUserId}`);
+    console.log(`🏷️ Person Tags: ${person.tags?.join(', ') || 'None'}`);
+    console.log(`📊 New Stage: ${stage}`);
+    
+    // Step 1: Get all existing deals for this person
+    console.log(`📊 Fetching all deals for person ${personId}...`);
+    const allDeals = await fubAPI.get(`/deals?personId=${personId}`);
+    console.log(`✅ Found ${allDeals.deals?.length || 0} existing deals`);
+    
+    // Step 2: Extract pipeline information from tags OR detect Commercial from stage
+    let pipelineTags = [];
+    let isCommercialStage = false;
+    
+    // Check if this is a commercial stage (starts with "COMMERCIAL - ")
+    if (stage.toLowerCase().startsWith('commercial - ')) {
+      console.log(`🏢 Commercial stage detected: ${stage}`);
+      pipelineTags = ['Commercial'];
+      isCommercialStage = true;
+    } else {
+      // Regular tag-based pipeline detection (excludes Commercial)
+      pipelineTags = extractPipelineFromTags(person.tags);
+      console.log(`🏷️ Extracted pipeline tags from [${person.tags?.join(', ') || 'None'}]: [${pipelineTags.join(', ')}]`);
+    }
+    
+    // Step 3: Enhanced deal deletion logic
+    if (allDeals.deals && allDeals.deals.length > 0) {
+      const dealsToDelete = [];
       
-      // Check if we should delete any deals
-      const dealIdsToDelete = shouldDeleteDeal({
-        stageIds: deals.deals?.map(d => d.id.toString()) || [],
-        stageNames: deals.deals?.map(d => d.stage) || [],
-        pipelineNames: deals.deals?.map(d => d.pipelineName) || [],
-        updatedStage: normalize(stage),
-        dealIds: deals.deals?.map(d => d.id.toString()) || []
-      });
-      
-      console.log(`Deals to delete: ${dealIdsToDelete.length}`, dealIdsToDelete);
-      
-      // Delete deals if needed
-      for (const dealId of dealIdsToDelete) {
+      for (const deal of allDeals.deals) {
+        // Get available stages for this deal's pipeline to check if contact stage matches
+        let availableStageNames = [];
         try {
-          await fubAPI.delete(`/deals/${dealId}`);
-          console.log(`✅ Successfully deleted deal ${dealId}`);
+          const pipelineStages = await fubAPI.get(`/pipelines/${deal.pipelineId}`);
+          availableStageNames = pipelineStages.stages?.map(s => s.name) || [];
         } catch (error) {
-          console.error(`❌ Failed to delete deal ${dealId}:`, error.message);
-          await sendCriticalError(person, stage, `Failed to delete deal ${dealId}`, error);
+          console.error(`❌ Failed to get stages for pipeline ${deal.pipelineId}:`, error.message);
+        }
+        
+        if (shouldDeleteDeal(deal, stage, availableStageNames)) {
+          dealsToDelete.push(deal);
         }
       }
       
-      if (dealIdsToDelete.length > 0) {
+      // Delete the marked deals
+      for (const deal of dealsToDelete) {
+        try {
+          console.log(`🗑️ Deleting deal ${deal.id} (${deal.stage} in ${deal.pipelineName})`);
+          await fubAPI.delete(`/deals/${deal.id}`);
+          console.log(`✅ Successfully deleted deal ${deal.id}`);
+        } catch (error) {
+          console.error(`❌ Failed to delete deal ${deal.id}:`, error.message);
+          await sendCriticalError(person, stage, `Failed to delete deal ${deal.id}`, error, pipelineTags);
+        }
+      }
+      
+      if (dealsToDelete.length > 0) {
+        console.log(`✅ Deletion complete. Deleted ${dealsToDelete.length} deals`);
         return res.json({ 
           success: true, 
-          message: `Deleted ${dealIdsToDelete.length} deals`,
-          deletedDeals: dealIdsToDelete 
+          message: `Deleted ${dealsToDelete.length} deals`,
+          deletedDeals: dealsToDelete.map(d => d.id)
         });
       }
     }
     
-    // Step 2: Extract pipeline information from tags
-    const pipelineTags = extractPipelineFromTags(person.tags);
-    console.log(`Extracted pipeline tags: ${pipelineTags.join(', ')}`);
-    
-    // Step 3: Handle different pipeline scenarios
+    // Step 4: Handle different pipeline scenarios
     if (pipelineTags.length === 0) {
-      console.log('❌ No pipeline tags detected');
-      // No pipeline tags - send notification
-      await sendPipelineDetectionFailure(person, stage, assignedUserId);
+      console.log('❌ No pipeline tags detected - sending notification');
+      await sendPipelineDetectionFailure(person, stage, assignedUserId, pipelineTags);
       return res.json({ success: true, message: 'No pipeline tags detected, notification sent' });
     }
     
     if (pipelineTags.length > 1) {
-      console.log('❌ Multiple pipeline tags detected:', pipelineTags);
-      // Multiple pipeline tags - send notification  
-      await sendPipelineDetectionFailure(person, stage, assignedUserId);
+      console.log('❌ Multiple pipeline tags detected - sending notification');
+      await sendPipelineDetectionFailure(person, stage, assignedUserId, pipelineTags);
       return res.json({ success: true, message: 'Multiple pipeline tags detected, notification sent' });
     }
     
-    // Step 4: Single pipeline tag - proceed with deal management
+    // Step 5: Single pipeline tag - proceed with deal management
     const pipelineTag = pipelineTags[0];
-    const pipelineId = PIPELINE_MAPPING[pipelineTag];
-    console.log(`Using pipeline: ${pipelineTag} (ID: ${pipelineId})`);
+    let pipelineId;
+    
+    if (pipelineTag === 'Commercial') {
+      pipelineId = CONFIG.COMMERCIAL_PIPELINE_ID;
+    } else {
+      pipelineId = PIPELINE_MAPPING[pipelineTag];
+    }
+    
+    console.log(`🎯 Using pipeline: ${pipelineTag} (ID: ${pipelineId})`);
     
     if (!pipelineId) {
       console.log('❌ Unknown pipeline tag:', pipelineTag);
-      await sendPipelineDetectionFailure(person, stage, assignedUserId);
+      await sendPipelineDetectionFailure(person, stage, assignedUserId, pipelineTags);
       return res.json({ success: true, message: 'Unknown pipeline tag, notification sent' });
     }
     
     // Get pipeline stages
+    console.log(`📊 Fetching pipeline stages for ${pipelineTag}...`);
     const pipelineStages = await fubAPI.get(`/pipelines/${pipelineId}`);
-    console.log(`Pipeline ${pipelineId} has ${pipelineStages.stages?.length || 0} stages`);
+    console.log(`✅ Pipeline ${pipelineId} has ${pipelineStages.stages?.length || 0} stages`);
     
-    // Format stage name if needed (handle special buyer mapping)
+    // Format stage name if needed (handle special mappings)
     let formattedStage = stage;
-    if (pipelineTag === "Buyer") {
-      formattedStage = formatStageForBuyer("Buyer", stage);
-      console.log(`Formatted buyer stage: "${stage}" → "${formattedStage}"`);
+    if (pipelineTag === "Commercial") {
+      const originalStage = formattedStage;
+      formattedStage = formatStageForCommercial(stage);
+      console.log(`🔄 Commercial stage mapping: "${originalStage}" → "${formattedStage}"`);
     }
+    // Note: Buyer pipeline no longer has special stage formatting
     
-    // Get existing deals for this person and pipeline
-    const existingDeals = await fubAPI.get(`/deals?pipelineId=${pipelineId}&personId=${person.id}`);
-    console.log(`Found ${existingDeals.deals?.length || 0} existing deals for pipeline ${pipelineId}`);
+    // Get existing deals for this person and specific pipeline
+    const existingDeals = await fubAPI.get(`/deals?pipelineId=${pipelineId}&personId=${personId}`);
+    console.log(`✅ Found ${existingDeals.deals?.length || 0} existing deals for ${pipelineTag} pipeline`);
+    
+    // Check for duplicate active deals in this pipeline
+    if (existingDeals.deals && existingDeals.deals.length > 0) {
+      const activeDeals = existingDeals.deals.filter(isDealActive);
+      console.log(`📊 Active deals in ${pipelineTag} pipeline: ${activeDeals.length}`);
+      
+      if (activeDeals.length > 1) {
+        console.log(`⚠️ Multiple active deals detected in ${pipelineTag} pipeline - creating Asana task`);
+        await createDuplicateDealsTask(person, stage, pipelineTag, activeDeals);
+        // Continue processing - don't stop the workflow
+      }
+    }
     
     // Find the stage ID
     const stageResult = findStageId({
@@ -388,25 +548,29 @@ app.post('/webhook/person-stage-updated', async (req, res) => {
       dealID: existingDeals.deals?.map(d => d.id).join(',') || ''
     });
     
-    console.log(`Stage mapping result:`, stageResult);
+    console.log(`🎯 Stage mapping result:`, stageResult);
     
     if (stageResult.stageId === "0") {
       console.log(`❌ Stage "${formattedStage}" not found in pipeline ${pipelineTag}`);
-      await sendCriticalError(person, stage, `Stage "${formattedStage}" not found in pipeline ${pipelineTag}`, null);
+      await sendCriticalError(person, stage, `Stage "${formattedStage}" not found in pipeline ${pipelineTag}`, null, pipelineTags);
       return res.json({ success: true, message: 'Stage not found in pipeline' });
     }
     
-    // Step 5: Handle deal creation/update based on logic
+    // Step 6: Handle deal creation/update based on logic
     if (stageResult.shouldCreateDeal === "yes") {
       try {
-        const newDeal = await fubAPI.post('/deals', {
-          personId: parseInt(person.id),
+        const createPayload = {
+          personId: parseInt(personId),
           pipelineId: parseInt(pipelineId),
           stageId: parseInt(stageResult.stageId),
-          assignedUserId: parseInt(assignedUserId)
-        });
+          assignedUserId: parseInt(assignedUserId),
+          name: person.name || 'Untitled Deal' // Add deal name as contact name
+        };
+        console.log(`🆕 Creating deal with payload:`, createPayload);
         
-        console.log(`✅ Created new deal ${newDeal.id} for ${person.name} - Pipeline: ${pipelineId}, Stage: ${stageResult.stageId}`);
+        const newDeal = await fubAPI.post('/deals', createPayload);
+        
+        console.log(`✅ Created deal ${newDeal.id} for ${person.name}`);
         return res.json({ 
           success: true, 
           message: 'Deal created', 
@@ -415,14 +579,8 @@ app.post('/webhook/person-stage-updated', async (req, res) => {
           stageId: parseInt(stageResult.stageId)
         });
       } catch (error) {
-        console.error(`❌ Failed to create deal for ${person.name}:`, error.message);
-        console.error(`Create deal payload:`, {
-          personId: parseInt(person.id),
-          pipelineId: parseInt(pipelineId),
-          stageId: parseInt(stageResult.stageId),
-          assignedUserId: parseInt(assignedUserId)
-        });
-        await sendCriticalError(person, stage, `Failed to create deal`, error);
+        console.error(`❌ Failed to create deal:`, error.message);
+        await sendCriticalError(person, stage, `Failed to create deal`, error, pipelineTags);
         return res.status(500).json({ error: 'Failed to create deal' });
       }
     }
@@ -430,13 +588,12 @@ app.post('/webhook/person-stage-updated', async (req, res) => {
     if (stageResult.shouldUpdateDeal === "yes") {
       try {
         const dealId = existingDeals.deals[0].id;
-        const updatePayload = {
-          stageId: parseInt(stageResult.stageId)
-        };
+        const updatePayload = { stageId: parseInt(stageResult.stageId) };
+        console.log(`🔄 Updating deal ${dealId} with:`, updatePayload);
         
         await fubAPI.put(`/deals/${dealId}`, updatePayload);
         
-        console.log(`✅ Updated deal ${dealId} for ${person.name} - New Stage ID: ${stageResult.stageId}`);
+        console.log(`✅ Updated deal ${dealId} for ${person.name}`);
         return res.json({ 
           success: true, 
           message: 'Deal updated', 
@@ -444,19 +601,14 @@ app.post('/webhook/person-stage-updated', async (req, res) => {
           newStageId: parseInt(stageResult.stageId)
         });
       } catch (error) {
-        console.error(`❌ Failed to update deal for ${person.name}:`, error.message);
-        console.error(`Update deal payload:`, {
-          dealId: existingDeals.deals[0].id,
-          stageId: parseInt(stageResult.stageId)
-        });
-        await sendCriticalError(person, stage, `Failed to update deal`, error);
+        console.error(`❌ Failed to update deal:`, error.message);
+        await sendCriticalError(person, stage, `Failed to update deal`, error, pipelineTags);
         return res.status(500).json({ error: 'Failed to update deal' });
       }
     }
     
     if (stageResult.skipUpdate === "yes") {
-      console.log(`⚠️ Multiple deals detected for ${person.name}, sending notification`);
-      // Multiple deals - send duplicate warning
+      console.log(`⚠️ Multiple deals detected, sending notification`);
       await sendDuplicateDealsWarning(person, pipelineTag, existingDeals.deals);
       return res.json({ success: true, message: 'Multiple deals detected, notification sent' });
     }
@@ -467,30 +619,31 @@ app.post('/webhook/person-stage-updated', async (req, res) => {
   } catch (error) {
     console.error('❌ Critical webhook error:', error);
     console.error('Error stack:', error.stack);
-    console.error('Request body:', JSON.stringify(req.body, null, 2));
     
     // Send critical error notification
     await sendCriticalError(
-      req.body.person || { name: 'Unknown', id: 'Unknown' }, 
-      req.body.stage || 'Unknown', 
+      person || { name: 'Unknown', id: 'Unknown' }, 
+      req.body.data?.stage || 'Unknown', 
       'Critical webhook processing error', 
-      error
+      error,
+      []
     );
     
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-// Critical error notification function
-async function sendCriticalError(person, stage, errorMessage, error) {
+// Updated critical error notification function
+async function sendCriticalError(person, stage, errorMessage, error, pipelineTags = []) {
   try {
     const errorDetails = error ? `\nError: ${error.message}\nStack: ${error.stack?.substring(0, 500)}` : '';
+    const pipelineInfo = pipelineTags.length > 0 ? `\n*Detected Pipeline Tags:* ${pipelineTags.join(', ')}` : '\n*Detected Pipeline Tags:* None';
     
     const message = `🚨 *CRITICAL ERROR - FUB Contact-Deal Sync*
     
 *Contact:* ${person.name}
 *Contact ID:* ${person.id}
-*Stage:* ${stage}
+*Stage:* ${stage}${pipelineInfo}
 *Error:* ${errorMessage}
 ${errorDetails}
 
@@ -504,7 +657,14 @@ This requires immediate attention. The automation failed to process this contact
     }
     
     // Also notify operations
-    await slackAPI.sendDM(CONFIG.SLACK_OPERATIONS_USER_ID, message);
+    if (CONFIG.SLACK_OPERATIONS_USER_ID) {
+      await slackAPI.sendDM(CONFIG.SLACK_OPERATIONS_USER_ID, message);
+    }
+    
+    // Send to notifications channel if configured
+    if (CONFIG.SLACK_NOTIFICATIONS_CHANNEL_ID) {
+      await slackAPI.sendChannelMessage(CONFIG.SLACK_NOTIFICATIONS_CHANNEL_ID, message);
+    }
     
     console.log(`✅ Critical error notification sent for ${person.name}`);
     
@@ -513,45 +673,78 @@ This requires immediate attention. The automation failed to process this contact
   }
 }
 
-// Notification functions
-async function sendPipelineDetectionFailure(person, stage, assignedUserId) {
+// Updated notification functions
+async function sendPipelineDetectionFailure(person, stage, assignedUserId, pipelineTags = []) {
   try {
-    // Get assigned user info
-    let assignedUser = null;
+    const message = `Hi! We tried to update the contact for ${person.name} for you when you updated the contact stage to ${stage} but we couldn't figure out which pipeline it's in. Please take a moment to <https://form.jotform.com/241376746869171?fubLead=${person.id}&leadName=${encodeURIComponent(person.name)}&updatedLead=${encodeURIComponent(stage)}&agentId=${assignedUserId}|click here and let us know> which pipeline the client is in and we'll generate the deal card for you. Let us know if you have any questions!
+
+-AIDA`;
+
+    // Try to get assigned user info for Slack notification
     try {
-      assignedUser = await fubAPI.get(`/users/${assignedUserId}`);
+      const assignedUser = await fubAPI.get(`/users/${assignedUserId}`);
+      if (assignedUser?.slackUserId) {
+        await slackAPI.sendDM(assignedUser.slackUserId, message);
+        console.log(`✅ Pipeline detection failure notification sent to assigned user`);
+      }
     } catch (error) {
-      console.error(`❌ Failed to get assigned user ${assignedUserId}:`, error.message);
-    }
-    
-    const slackUserId = assignedUser?.slackUserId; // Assuming this field exists
-    
-    const message = `🚨 *Pipeline Detection Failed*
-    
-*Contact:* ${person.name}
-*Stage Updated To:* ${stage}
-*Contact ID:* ${person.id}
-
-We tried to update the contact stage but couldn't figure out which pipeline it's in. Please take a moment to review the contact and specify which pipeline the client is in.
-
-*Contact Link:* https://align.followupboss.com/2/people/view/${person.id}
-
-Let us know if you have any questions!`;
-
-    // Send to assigned user if we have their Slack ID
-    if (slackUserId) {
-      await slackAPI.sendDM(slackUserId, message);
-      console.log(`✅ Pipeline detection failure notification sent to assigned user ${assignedUserId}`);
-    } else {
-      console.log(`⚠️ No Slack user ID found for assigned user ${assignedUserId}`);
+      console.log(`⚠️ Could not notify assigned user ${assignedUserId}`);
     }
     
     // Also notify operations
-    await slackAPI.sendDM(CONFIG.SLACK_OPERATIONS_USER_ID, message);
-    console.log(`✅ Pipeline detection failure notification sent to operations`);
+    if (CONFIG.SLACK_OPERATIONS_USER_ID) {
+      await slackAPI.sendDM(CONFIG.SLACK_OPERATIONS_USER_ID, message);
+      console.log(`✅ Pipeline detection failure notification sent to operations`);
+    }
     
   } catch (error) {
     console.error('❌ Failed to send pipeline detection failure notification:', error);
+  }
+}
+
+async function createDuplicateDealsTask(person, contactStage, pipelineName, activeDeals) {
+  try {
+    const title = `Duplicate Deals Detected - ${person.name} (ID: ${person.id})`;
+    const description = `FUB Client: https://align.followupboss.com/2/people/view/${person.id}
+
+The agent just submitted a contact stage update to: ${contactStage} with a pipeline tag: ${pipelineName}.
+
+AIDA detected multiple active deals in the same pipeline. Please review and delete the duplicate if needed. Make sure the remaining deal gets updated to the stage above.
+
+Active Deals Found:
+${activeDeals.map(deal => `• Deal ID: ${deal.id} - Stage: ${deal.stage}`).join('\n')}
+
+Next Steps:
+1. Review the deals in FUB
+2. Delete any duplicates
+3. Update the remaining deal to the correct stage: ${contactStage}`;
+
+    const task = await asanaAPI.createTask(title, description, CONFIG.ASANA_ASSIGNEE_GID);
+    console.log(`✅ Created Asana task ${task.data.gid} for duplicate deals`);
+    
+  } catch (error) {
+    console.error('❌ Failed to create Asana task for duplicate deals:', error);
+    
+    // Send Slack notification as fallback
+    try {
+      const fallbackMessage = `⚠️ *Asana Task Creation Failed*
+      
+Failed to create Asana task for duplicate deals detection.
+
+*Contact:* ${person.name} (ID: ${person.id})
+*Stage:* ${contactStage}
+*Pipeline:* ${pipelineName}
+
+Please manually review this contact for duplicate deals.
+
+*Error:* ${error.message}`;
+
+      if (CONFIG.SLACK_OPERATIONS_USER_ID) {
+        await slackAPI.sendDM(CONFIG.SLACK_OPERATIONS_USER_ID, fallbackMessage);
+      }
+    } catch (slackError) {
+      console.error('❌ Failed to send fallback Slack notification:', slackError);
+    }
   }
 }
 
@@ -572,8 +765,10 @@ ${deals.map(deal => `• Deal ID: ${deal.id} - Stage: ${deal.stage}`).join('\n')
 
 Thanks!`;
 
-    await slackAPI.sendDM(CONFIG.SLACK_OPERATIONS_USER_ID, message);
-    console.log(`✅ Duplicate deals warning sent for ${person.name}`);
+    if (CONFIG.SLACK_OPERATIONS_USER_ID) {
+      await slackAPI.sendDM(CONFIG.SLACK_OPERATIONS_USER_ID, message);
+      console.log(`✅ Duplicate deals warning sent for ${person.name}`);
+    }
     
   } catch (error) {
     console.error('❌ Failed to send duplicate deals warning:', error);
@@ -585,9 +780,55 @@ app.get('/health', (req, res) => {
   res.json({ status: 'healthy', timestamp: new Date().toISOString() });
 });
 
+// Test endpoint for checking configuration
+app.get('/test-config', async (req, res) => {
+  try {
+    const configStatus = {
+      fub: !!CONFIG.FUB_API_KEY,
+      slack: !!CONFIG.SLACK_BOT_TOKEN,
+      asana: !!CONFIG.ASANA_ACCESS_TOKEN,
+      environment_variables: {
+        FUB_API_KEY: !!CONFIG.FUB_API_KEY,
+        SLACK_BOT_TOKEN: !!CONFIG.SLACK_BOT_TOKEN,
+        SLACK_OPERATIONS_USER_ID: !!CONFIG.SLACK_OPERATIONS_USER_ID,
+        SLACK_OWNER_USER_ID: !!CONFIG.SLACK_OWNER_USER_ID,
+        SLACK_NOTIFICATIONS_CHANNEL_ID: !!CONFIG.SLACK_NOTIFICATIONS_CHANNEL_ID,
+        ASANA_ACCESS_TOKEN: !!CONFIG.ASANA_ACCESS_TOKEN,
+        ASANA_PROJECT_ID: !!CONFIG.ASANA_PROJECT_ID,
+        ASANA_ASSIGNEE_GID: !!CONFIG.ASANA_ASSIGNEE_GID
+      }
+    };
+
+    // Test Asana connection if token is available
+    if (CONFIG.ASANA_ACCESS_TOKEN) {
+      configStatus.asana_connection = await asanaAPI.testConnection();
+    }
+
+    res.json({
+      status: 'Configuration check complete',
+      timestamp: new Date().toISOString(),
+      config: configStatus
+    });
+
+  } catch (error) {
+    res.status(500).json({
+      error: 'Configuration test failed',
+      details: error.message
+    });
+  }
+});
+
 // Start server
 app.listen(CONFIG.PORT, () => {
   console.log(`FUB Contact-to-Deal Sync server running on port ${CONFIG.PORT}`);
+  console.log('Configuration status:');
+  console.log(`- FUB API Key: ${CONFIG.FUB_API_KEY ? '✅ Set' : '❌ Missing'}`);
+  console.log(`- Slack Bot Token: ${CONFIG.SLACK_BOT_TOKEN ? '✅ Set' : '❌ Missing'}`);
+  console.log(`- Asana Access Token: ${CONFIG.ASANA_ACCESS_TOKEN ? '✅ Set' : '❌ Missing'}`);
+  console.log(`- Operations User ID: ${CONFIG.SLACK_OPERATIONS_USER_ID ? '✅ Set' : '❌ Missing'}`);
+  console.log(`- Owner User ID: ${CONFIG.SLACK_OWNER_USER_ID ? '✅ Set' : '❌ Missing'}`);
+  console.log(`- Asana Project ID: ${CONFIG.ASANA_PROJECT_ID ? '✅ Set' : '❌ Missing'}`);
+  console.log(`- Asana Assignee GID: ${CONFIG.ASANA_ASSIGNEE_GID ? '✅ Set' : '❌ Missing'}`);
 });
 
 module.exports = app;

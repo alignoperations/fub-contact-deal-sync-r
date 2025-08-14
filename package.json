@@ -1,7 +1,7 @@
 {
   "name": "fub-contact-deal-sync",
   "version": "1.0.0",
-  "description": "FUB Contact-to-Deal Sync Automation - Handles creating, updating, and deleting deals based on contact stage changes",
+  "description": "FUB Contact-to-Deal Sync Automation - Handles creating, updating, and deleting deals based on contact stage changes with Slack and Asana integrations",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
@@ -16,7 +16,10 @@
     "deals",
     "contacts",
     "slack",
-    "webhook"
+    "asana",
+    "webhook",
+    "commercial",
+    "real-estate"
   ],
   "author": "Align Team",
   "license": "MIT",
