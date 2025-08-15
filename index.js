@@ -241,7 +241,6 @@ const extractPipelineFromTags = (tags) => {
   
   return [...new Set(pipelineTags)];
 };
-
 const shouldDeleteDeal = (deal, contactStage, availableStageNames) => {
   const dealStage = normalize(deal.stage || '');
   const pipelineName = normalize(deal.pipelineName || '');
@@ -489,6 +488,24 @@ app.post('/webhook/person-stage-updated', async (req, res) => {
       // Regular tag-based pipeline detection (excludes Commercial)
       pipelineTags = extractPipelineFromTags(person.tags);
       console.log(`🏷️ Extracted pipeline tags from [${person.tags?.join(', ') || 'None'}]: [${pipelineTags.join(', ')}]`);
+    }
+// Step 2.5: Check if contact stage already matches an existing deal stage
+    if (allDeals.deals && allDeals.deals.length > 0) {
+      for (const deal of allDeals.deals) {
+        let dealStageName = normalize(deal.stage || '');
+        let contactStageName = normalize(stage);
+        
+        // Handle commercial stage formatting for comparison
+        if (stage.toLowerCase().startsWith('commercial - ')) {
+          contactStageName = normalize(formatStageForCommercial(stage));
+        }
+        
+        // If contact stage matches any existing deal stage, do nothing
+        if (dealStageName === contactStageName) {
+          console.log(`ℹ️ Contact stage "${stage}" already matches existing deal ${deal.id} stage "${deal.stage}" - no action required`);
+          return res.json({ success: true, message: 'Contact stage matches existing deal stage, no action required' });
+        }
+      }
     }
 // Step 3: Enhanced pipeline logic based on stage matching
     if (pipelineTags.length === 0) {
