@@ -364,6 +364,47 @@ const formatStageForCommercial = (contactStage) => {
   return contactStage; // No prefix found, return as-is
 };
 
+// Helper function to update existing deal when no pipeline tags detected
+const updateExistingDealWithoutPipelineTags = async (deal, contactStage) => {
+  try {
+    // Get the pipeline stages for this deal's pipeline
+    const pipelineStages = await fubAPI.get(`/pipelines/${deal.pipelineId}`);
+    
+    // Format the stage based on pipeline type
+    let formattedStage = contactStage;
+    
+    // Check if it's a commercial pipeline by name
+    const pipelineName = pipelineStages.name || '';
+    if (pipelineName.toLowerCase().includes('commercial') && contactStage.toLowerCase().startsWith('commercial - ')) {
+      formattedStage = formatStageForCommercial(contactStage);
+    }
+    
+    // Find the stage ID
+    const stageResult = findStageId({
+      stageName: formattedStage,
+      stageNames: pipelineStages.stages?.map(s => s.name).join(',') || '',
+      stageIds: pipelineStages.stages?.map(s => s.id).join(',') || '',
+      dealID: deal.id.toString()
+    });
+    
+    if (stageResult.stageId === "0") {
+      console.log(`❌ Stage "${formattedStage}" not found in pipeline ${pipelineName}`);
+      return { success: false, reason: 'stage_not_found', pipeline: pipelineName, stage: formattedStage };
+    }
+    
+    // Update the deal
+    const updatePayload = { stageId: parseInt(stageResult.stageId) };
+    await fubAPI.put(`/deals/${deal.id}`, updatePayload);
+    
+    console.log(`✅ Updated existing deal ${deal.id} to stage "${formattedStage}" (ID: ${stageResult.stageId})`);
+    return { success: true, dealId: deal.id, stageId: parseInt(stageResult.stageId), pipeline: pipelineName };
+    
+  } catch (error) {
+    console.error(`❌ Failed to update existing deal ${deal.id}:`, error.message);
+    return { success: false, reason: 'update_failed', error: error.message };
+  }
+};
+
 // Main webhook handler
 app.post('/webhook/person-stage-updated', async (req, res) => {
   let person = null; // Declare in function scope
@@ -447,13 +488,41 @@ app.post('/webhook/person-stage-updated', async (req, res) => {
     
     // Step 3: Enhanced pipeline logic based on stage matching (MOVED UP)
     if (pipelineTags.length === 0) {
-      // Only send notification if there are NO existing deals
-      if (!allDeals.deals || allDeals.deals.length === 0) {
+      // Check if there's exactly one existing deal - if so, update it instead of sending notification
+      if (allDeals.deals && allDeals.deals.length === 1) {
+        console.log('🎯 No pipeline tags detected but exactly one deal exists - attempting to update it');
+        const existingDeal = allDeals.deals[0];
+        
+        const updateResult = await updateExistingDealWithoutPipelineTags(existingDeal, stage);
+        
+        if (updateResult.success) {
+          return res.json({
+            success: true,
+            message: 'Updated existing deal without pipeline tags',
+            dealId: updateResult.dealId,
+            stageId: updateResult.stageId,
+            pipeline: updateResult.pipeline
+          });
+        } else {
+          // If update failed, fall back to sending notification
+          console.log(`❌ Failed to update existing deal: ${updateResult.reason}`);
+          await sendCriticalError(
+            person, 
+            stage, 
+            `Failed to update existing deal ${existingDeal.id}: ${updateResult.reason}`, 
+            null, 
+            pipelineTags
+          );
+          return res.json({ success: true, message: 'Failed to update existing deal, error notification sent' });
+        }
+      }
+      // No existing deals - send notification as before
+      else if (!allDeals.deals || allDeals.deals.length === 0) {
         console.log('❌ No pipeline tags detected and no existing deals - sending notification');
         await sendPipelineDetectionFailure(person, stage, assignedUserId, pipelineTags);
         return res.json({ success: true, message: 'No pipeline tags detected, notification sent' });
       } else {
-        console.log('❌ No pipeline tags detected but existing deals found - proceeding with deletion logic');
+        console.log('❌ No pipeline tags detected but multiple existing deals found - proceeding with deletion logic');
         // Continue to deletion logic below - let it handle the existing deals
       }
     }
