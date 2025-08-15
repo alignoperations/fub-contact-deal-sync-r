@@ -333,6 +333,85 @@ const formatStageForCommercial = (contactStage) => {
   }
   return contactStage;
 };
+// Helper function to check if a stage exists in any pipeline (i.e., is a valid deal stage)
+const isValidDealStage = async (stageName) => {
+  try {
+    const normalizedStage = normalize(stageName);
+    
+    // Check if it's a commercial stage
+    if (stageName.toLowerCase().startsWith('commercial - ')) {
+      const formattedStage = formatStageForCommercial(stageName);
+      const allPipelines = await fubAPI.get('/pipelines');
+      const commercialPipeline = allPipelines.pipelines?.find(p => 
+        p.name && p.name.toLowerCase().includes('commercial')
+      );
+      if (commercialPipeline) {
+        const pipelineStages = await fubAPI.get(`/pipelines/${commercialPipeline.id}`);
+        const stageNames = pipelineStages.stages?.map(s => normalize(s.name)) || [];
+        return stageNames.includes(normalize(formattedStage));
+      }
+    }
+    
+    // Check all mapped pipelines
+    for (const pipelineId of Object.values(PIPELINE_MAPPING)) {
+      try {
+        const pipelineStages = await fubAPI.get(`/pipelines/${pipelineId}`);
+        const stageNames = pipelineStages.stages?.map(s => normalize(s.name)) || [];
+        if (stageNames.includes(normalizedStage)) {
+          return true;
+        }
+      } catch (error) {
+        console.error(`❌ Failed to check pipeline ${pipelineId}:`, error.message);
+      }
+    }
+    
+    return false;
+  } catch (error) {
+    console.error('❌ Failed to validate deal stage:', error.message);
+    return false;
+  }
+};
+
+// Helper function to update existing deal when no pipeline tags detected
+const updateExistingDealWithoutPipelineTags = async (deal, contactStage) => {
+  try {
+    // Get the pipeline stages for this deal's pipeline
+    const pipelineStages = await fubAPI.get(`/pipelines/${deal.pipelineId}`);
+    
+    // Format the stage based on pipeline type
+    let formattedStage = contactStage;
+    
+    // Check if it's a commercial pipeline by name
+    const pipelineName = pipelineStages.name || '';
+    if (pipelineName.toLowerCase().includes('commercial') && contactStage.toLowerCase().startsWith('commercial - ')) {
+      formattedStage = formatStageForCommercial(contactStage);
+    }
+    
+    // Find the stage ID
+    const stageResult = findStageId({
+      stageName: formattedStage,
+      stageNames: pipelineStages.stages?.map(s => s.name).join(',') || '',
+      stageIds: pipelineStages.stages?.map(s => s.id).join(',') || '',
+      dealID: deal.id.toString()
+    });
+    
+    if (stageResult.stageId === "0") {
+      console.log(`❌ Stage "${formattedStage}" not found in pipeline ${pipelineName}`);
+      return { success: false, reason: 'stage_not_found', pipeline: pipelineName, stage: formattedStage };
+    }
+    
+    // Update the deal
+    const updatePayload = { stageId: parseInt(stageResult.stageId) };
+    await fubAPI.put(`/deals/${deal.id}`, updatePayload);
+    
+    console.log(`✅ Updated existing deal ${deal.id} to stage "${formattedStage}" (ID: ${stageResult.stageId})`);
+    return { success: true, dealId: deal.id, stageId: parseInt(stageResult.stageId), pipeline: pipelineName };
+    
+  } catch (error) {
+    console.error(`❌ Failed to update existing deal ${deal.id}:`, error.message);
+    return { success: false, reason: 'update_failed', error: error.message };
+  }
+};
 // Main webhook handler
 app.post('/webhook/person-stage-updated', async (req, res) => {
   let person = null;
