@@ -180,3 +180,156 @@ const asanaAPI = {
     }
   }
 };
+// Check if deal should be counted as "active" (not protected/closed)
+const isDealActive = (deal) => {
+  const dealStage = normalize(deal.stage || '');
+  
+  if (dealStage.includes('closed')) {
+    return false;
+  }
+  
+  if (STAGE_MAPPING.protectedStages.some(stage => 
+    dealStage.includes(normalize(stage)))) {
+    return false;
+  }
+  
+  return true;
+};
+
+// Enhanced Stage mapping configuration
+const STAGE_MAPPING = {
+  protectedStages: [
+    "offer rejected", "client not taken", "working with another agent", 
+    "fall through", "expired", "cancelled", "listing agreement", 
+    "pre-listing", "active listing", "active off-market", 
+    "application accepted", "attorney review", "under contract", 
+    "showing homes", "offers submitted", "submitting applications"
+  ],
+  
+  protectedPipelines: [
+    "agent recruiting", "outgoing referral"
+  ],
+  
+  deletionStages: [
+    "lead", "attempted contact", "spoke with customer", "unresponsive", "nurture"
+  ]
+};
+
+// Pipeline tag mapping (Commercial excluded from tag detection)
+const PIPELINE_MAPPING = {
+  'Seller': 2,
+  'Buyer': 1,
+  'Landlord': 3,
+  'Tenant': 4,
+  'Listing': 2
+};
+
+// Utility functions
+const normalize = (str) => (str || "").trim().toLowerCase();
+
+const extractPipelineFromTags = (tags) => {
+  if (!tags || !Array.isArray(tags)) return [];
+  
+  const pipelineTags = [];
+  const tagStr = tags.join(' ').toLowerCase();
+  
+  Object.keys(PIPELINE_MAPPING).forEach(pipeline => {
+    if (tagStr.includes(pipeline.toLowerCase())) {
+      pipelineTags.push(pipeline);
+    }
+  });
+  
+  return [...new Set(pipelineTags)];
+};
+
+const shouldDeleteDeal = (deal, contactStage, availableStageNames) => {
+  const dealStage = normalize(deal.stage || '');
+  const pipelineName = normalize(deal.pipelineName || '');
+  let updatedStage = normalize(contactStage);
+  
+  if (contactStage.toLowerCase().startsWith('commercial - ')) {
+    updatedStage = normalize(contactStage.substring(13));
+  }
+  
+  if (STAGE_MAPPING.protectedPipelines.some(pipeline => 
+    pipelineName.includes(normalize(pipeline)))) {
+    console.log(`🛡️ Deal ${deal.id} in protected pipeline: ${pipelineName}`);
+    return false;
+  }
+  
+  if (dealStage.includes('closed')) {
+    console.log(`🛡️ Deal ${deal.id} is closed: ${dealStage}`);
+    return false;
+  }
+  
+  if (STAGE_MAPPING.protectedStages.some(stage => 
+    dealStage.includes(normalize(stage)))) {
+    console.log(`🛡️ Deal ${deal.id} in protected stage: ${dealStage}`);
+    return false;
+  }
+  
+  if (STAGE_MAPPING.deletionStages.includes(updatedStage)) {
+    console.log(`🗑️ Deal ${deal.id} marked for deletion: contact in deletion stage "${updatedStage}"`);
+    return true;
+  }
+  
+  const normalizedAvailableStages = availableStageNames.map(normalize);
+  if (!normalizedAvailableStages.includes(updatedStage)) {
+    console.log(`🗑️ Deal ${deal.id} marked for deletion: contact stage "${updatedStage}" not found in pipeline stages`);
+    return true;
+  }
+  
+  console.log(`✅ Deal ${deal.id} kept: stage "${updatedStage}" found in pipeline`);
+  return false;
+};
+
+const findStageId = (inputData) => {
+  const { stageName, stageNames, stageIds, dealID } = inputData;
+  
+  const inputName = normalize(stageName);
+  const namesArray = (stageNames || "").split(',').map(name => name.trim().toLowerCase());
+  const idsArray = (stageIds || "").split(',').map(id => id.trim());
+  const dealIdsArray = (dealID || "").split(',').map(id => id.trim()).filter(Boolean);
+  
+  const index = namesArray.indexOf(inputName);
+  const matchedId = index !== -1 ? idsArray[index] : "0";
+  
+  console.log(`🎯 Stage mapping: "${inputName}" → Stage ID: ${matchedId}`);
+  
+  let shouldCreateDeal = "no";
+  let shouldUpdateDeal = "no";
+  let skipUpdate = "no";
+  
+  if (dealIdsArray.length === 0) {
+    shouldCreateDeal = "yes";
+    console.log(`✅ Decision: CREATE (no existing deals)`);
+  } else if (dealIdsArray.length > 1) {
+    skipUpdate = "yes";
+    console.log(`⚠️ Decision: SKIP (multiple deals: ${dealIdsArray.length})`);
+  } else {
+    if (matchedId === "0") {
+      console.log(`❌ Decision: ERROR (stage not found in pipeline)`);
+    } else {
+      shouldUpdateDeal = "yes";
+      console.log(`🔄 Decision: UPDATE (one deal exists, stage found)`);
+    }
+  }
+  
+  return {
+    stageId: matchedId,
+    shouldCreateDeal,
+    shouldUpdateDeal,
+    skipUpdate
+  };
+};
+
+const formatStageForBuyer = (pipelineName, stageName) => {
+  return stageName;
+};
+
+const formatStageForCommercial = (contactStage) => {
+  if (contactStage.toLowerCase().startsWith('commercial - ')) {
+    return contactStage.substring(13);
+  }
+  return contactStage;
+};
