@@ -1,4 +1,38 @@
-// FUB Contact-to-Deal Sync Automation
+// Step 3: Enhanced pipeline logic based on stage matching (MOVED UP)
+    if (pipelineTags.length === 0) {
+      // Check if there's exactly one existing deal - if so, update it instead of sending notification
+      if (allDeals.deals && allDeals.deals.length === 1) {
+        console.log('🎯 No pipeline tags detected but exactly one deal exists - attempting to update it');
+        const existingDeal = allDeals.deals[0];
+        
+        const updateResult = await updateExistingDealWithoutPipelineTags(existingDeal, stage);
+        
+        if (updateResult.success) {
+          return res.json({
+            success: true,
+            message: 'Updated existing deal without pipeline tags',
+            dealId: updateResult.dealId,
+            stageId: updateResult.stageId,
+            pipeline: updateResult.pipeline
+          });
+        } else {
+          // If update failed, fall back to sending notification
+          console.log(`❌ Failed to update existing deal: ${updateResult.reason}`);
+          await sendCriticalError(
+            person, 
+            stage, 
+            `Failed to update existing deal ${existingDeal.id}: ${updateResult.reason}`, 
+            null, 
+            pipelineTags
+          );
+          return res.json({ success: true, message: 'Failed to update existing deal, error notification sent' });
+        }
+      }
+      // No existing deals and no pipeline tags - check if this is a non-deal stage
+      else if (!allDeals.deals || allDeals.deals.length === 0) {
+        // Check if this stage is in our deletion stages (non-deal stages)
+        const normalizedStage = normalize(stage);
+        // FUB Contact-to-Deal Sync Automation
 // Handles creating, updating, and deleting deals based on contact stage changes
 // Converts email notifications to Slack DMs
 
@@ -364,7 +398,44 @@ const formatStageForCommercial = (contactStage) => {
   return contactStage; // No prefix found, return as-is
 };
 
-// Helper function to update existing deal when no pipeline tags detected
+// Helper function to check if a stage exists in any pipeline (i.e., is a valid deal stage)
+const isValidDealStage = async (stageName) => {
+  try {
+    const normalizedStage = normalize(stageName);
+    
+    // Check if it's a commercial stage
+    if (stageName.toLowerCase().startsWith('commercial - ')) {
+      const formattedStage = formatStageForCommercial(stageName);
+      const allPipelines = await fubAPI.get('/pipelines');
+      const commercialPipeline = allPipelines.pipelines?.find(p => 
+        p.name && p.name.toLowerCase().includes('commercial')
+      );
+      if (commercialPipeline) {
+        const pipelineStages = await fubAPI.get(`/pipelines/${commercialPipeline.id}`);
+        const stageNames = pipelineStages.stages?.map(s => normalize(s.name)) || [];
+        return stageNames.includes(normalize(formattedStage));
+      }
+    }
+    
+    // Check all mapped pipelines
+    for (const pipelineId of Object.values(PIPELINE_MAPPING)) {
+      try {
+        const pipelineStages = await fubAPI.get(`/pipelines/${pipelineId}`);
+        const stageNames = pipelineStages.stages?.map(s => normalize(s.name)) || [];
+        if (stageNames.includes(normalizedStage)) {
+          return true;
+        }
+      } catch (error) {
+        console.error(`❌ Failed to check pipeline ${pipelineId}:`, error.message);
+      }
+    }
+    
+    return false;
+  } catch (error) {
+    console.error('❌ Failed to validate deal stage:', error.message);
+    return false;
+  }
+};
 const updateExistingDealWithoutPipelineTags = async (deal, contactStage) => {
   try {
     // Get the pipeline stages for this deal's pipeline
