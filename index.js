@@ -516,22 +516,7 @@ app.post('/webhook/person-stage-updated', async (req, res) => {
     const allDeals = await fubAPI.get(`/deals?personId=${personId}`);
     console.log(`SUCCESS: Found ${allDeals.deals?.length || 0} existing deals`);
     
-    // Step 2: Extract pipeline information from tags OR detect Commercial from stage
-    let pipelineTags = [];
-    let isCommercialStage = false;
-    
-    // Check if this is a commercial stage (starts with 'COMMERCIAL - ')
-    if (stage.toLowerCase().startsWith('commercial - ')) {
-      console.log(`COMMERCIAL: stage detected: ${stage}`);
-      pipelineTags = ['Commercial'];
-      isCommercialStage = true;
-    } else {
-      // Regular tag-based pipeline detection (excludes Commercial)
-      pipelineTags = extractPipelineFromTags(person.tags);
-      console.log(`TAGS: Extracted pipeline tags from [${person.tags?.join(', ') || 'None'}]: [${pipelineTags.join(', ')}]`);
-    }
-
-    // Step 2.5: Check if contact stage already matches an existing deal stage
+    // Step 2: Check if contact stage already matches an existing deal stage FIRST
     if (allDeals.deals && allDeals.deals.length > 0) {
       for (const deal of allDeals.deals) {
         let dealStageName = normalize(deal.stage || '');
@@ -550,7 +535,22 @@ app.post('/webhook/person-stage-updated', async (req, res) => {
       }
     }
 
-    // Step 3: Enhanced pipeline logic based on stage matching
+    // Step 3: Extract pipeline information from tags OR detect Commercial from stage
+    let pipelineTags = [];
+    let isCommercialStage = false;
+    
+    // Check if this is a commercial stage (starts with 'COMMERCIAL - ')
+    if (stage.toLowerCase().startsWith('commercial - ')) {
+      console.log(`COMMERCIAL: stage detected: ${stage}`);
+      pipelineTags = ['Commercial'];
+      isCommercialStage = true;
+    } else {
+      // Regular tag-based pipeline detection (excludes Commercial)
+      pipelineTags = extractPipelineFromTags(person.tags);
+      console.log(`TAGS: Extracted pipeline tags from [${person.tags?.join(', ') || 'None'}]: [${pipelineTags.join(', ')}]`);
+    }
+
+    // Step 4: Enhanced pipeline logic based on stage matching
     if (pipelineTags.length === 0) {
       // Check if there's exactly one existing deal - if so, update it instead of sending notification
       if (allDeals.deals && allDeals.deals.length === 1) {
@@ -750,7 +750,7 @@ app.post('/webhook/person-stage-updated', async (req, res) => {
       }
     }
 
-    // Step 4: Enhanced deal deletion logic (only runs if no stage matches found)
+    // Step 5: Enhanced deal deletion logic (only runs if no stage matches found)
     if (allDeals.deals && allDeals.deals.length > 0) {
       const dealsToDelete = [];
       
