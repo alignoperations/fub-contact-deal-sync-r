@@ -457,7 +457,7 @@ app.post('/webhook/person-stage-updated', async (req, res) => {
         // Continue to deletion logic below - let it handle the existing deals
       }
     }
-    } else {
+    else {
       // If we have pipeline tags, check stage matching
       // Check which pipelines the contact stage actually matches
       const matchingPipelines = [];
@@ -714,69 +714,6 @@ app.post('/webhook/person-stage-updated', async (req, res) => {
         const newDeal = await fubAPI.post('/deals', createPayload);
         
         console.log(`✅ Created deal ${newDeal.id} for ${person.name}`);
-        return res.json({ 
-          success: true, 
-          message: 'Deal created', 
-          dealId: newDeal.id,
-          pipelineId: parseInt(pipelineId),
-          stageId: parseInt(stageResult.stageId)
-        });
-      } catch (error) {
-        console.error(`❌ Failed to create deal:`, error.message);
-        console.error(`❌ Error response:`, error.response?.data);
-        console.error(`❌ Error status:`, error.response?.status);
-        await sendCriticalError(person, stage, `Failed to create deal: ${error.response?.data ? JSON.stringify(error.response.data) : error.message}`, error, pipelineTags);
-        return res.status(500).json({ error: 'Failed to create deal' });
-      }
-    }
-    
-    if (stageResult.shouldUpdateDeal === "yes") {
-      try {
-        const dealId = existingDeals.deals[0].id;
-        const updatePayload = { stageId: parseInt(stageResult.stageId) };
-        console.log(`🔄 Updating deal ${dealId} with:`, updatePayload);
-        
-        await fubAPI.put(`/deals/${dealId}`, updatePayload);
-        
-        console.log(`✅ Updated deal ${dealId} for ${person.name}`);
-        return res.json({ 
-          success: true, 
-          message: 'Deal updated', 
-          dealId: dealId,
-          newStageId: parseInt(stageResult.stageId)
-        });
-      } catch (error) {
-        console.error(`❌ Failed to update deal:`, error.message);
-        await sendCriticalError(person, stage, `Failed to update deal`, error, pipelineTags);
-        return res.status(500).json({ error: 'Failed to update deal' });
-      }
-    }
-    
-    if (stageResult.skipUpdate === "yes") {
-      console.log(`⚠️ Multiple deals detected, sending notification`);
-      await sendDuplicateDealsWarning(person, pipelineTag, existingDeals.deals);
-      return res.json({ success: true, message: 'Multiple deals detected, notification sent' });
-    }
-    
-    console.log(`ℹ️ No action required for ${person.name}`);
-    return res.json({ success: true, message: 'No action required' });
-    
-  } catch (error) {
-    console.error('❌ Critical webhook error:', error);
-    console.error('Error stack:', error.stack);
-    
-    // Send critical error notification
-    await sendCriticalError(
-      person || { name: 'Unknown', id: 'Unknown' }, 
-      req.body.data?.stage || 'Unknown', 
-      'Critical webhook processing error', 
-      error,
-      []
-    );
-    
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
         return res.json({ 
           success: true, 
           message: 'Deal created', 
