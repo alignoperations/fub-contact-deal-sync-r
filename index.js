@@ -658,9 +658,17 @@ app.post('/webhook/person-stage-updated', async (req, res) => {
         console.log('ERROR: Contact stage matches no pipeline stages - proceed with deletion logic');
         // Continue to deletion logic below
       } else if (matchingPipelines.length > 1) {
-        console.log('ERROR: Contact stage matches multiple pipeline stages - sending notification');
-        await sendPipelineDetectionFailure(person, stage, assignedUserId, pipelineTags);
-        return res.json({ success: true, message: 'Stage matches multiple pipelines, notification sent' });
+        console.log('ERROR: Contact stage matches multiple pipeline stages');
+        
+        // Only send notification if there are NO existing deals
+        if (!allDeals.deals || allDeals.deals.length === 0) {
+          console.log('INFO: No existing deals found - sending pipeline detection notification');
+          await sendPipelineDetectionFailure(person, stage, assignedUserId, pipelineTags);
+          return res.json({ success: true, message: 'Stage matches multiple pipelines, notification sent' });
+        } else {
+          console.log('INFO: Multiple deals exist - skipping notification to avoid duplicates');
+          return res.json({ success: true, message: 'Stage matches multiple pipelines but deals exist, no notification sent' });
+        }
       } else {
         // Single matching pipeline - skip deletion and go straight to deal management
         const selectedPipeline = matchingPipelines[0];
