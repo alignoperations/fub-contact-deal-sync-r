@@ -539,7 +539,22 @@ app.post('/webhook/person-stage-updated', async (req, res) => {
     const allDeals = await fubAPI.get(`/deals?personId=${personId}`);
     console.log(`SUCCESS: Found ${allDeals.deals?.length || 0} existing deals`);
     
-    // Step 2: Check if contact stage already matches an existing deal stage FIRST
+    // Step 2: Extract pipeline information from tags OR detect Commercial from stage
+    let pipelineTags = [];
+    let isCommercialStage = false;
+    
+    // Check if this is a commercial stage (starts with 'COMMERCIAL - ')
+    if (stage.toLowerCase().startsWith('commercial - ')) {
+      console.log(`COMMERCIAL: stage detected: ${stage}`);
+      pipelineTags = ['Commercial'];
+      isCommercialStage = true;
+    } else {
+      // Regular tag-based pipeline detection (excludes Commercial)
+      pipelineTags = extractPipelineFromTags(person.tags);
+      console.log(`TAGS: Extracted pipeline tags from [${person.tags?.join(', ') || 'None'}]: [${pipelineTags.join(', ')}]`);
+    }
+
+    // Step 2.5: Check if contact stage already matches an existing deal stage
     if (allDeals.deals && allDeals.deals.length > 0) {
       for (const deal of allDeals.deals) {
         let dealStageName = normalize(deal.stage || '');
@@ -558,22 +573,7 @@ app.post('/webhook/person-stage-updated', async (req, res) => {
       }
     }
 
-    // Step 3: Extract pipeline information from tags OR detect Commercial from stage
-    let pipelineTags = [];
-    let isCommercialStage = false;
-    
-    // Check if this is a commercial stage (starts with 'COMMERCIAL - ')
-    if (stage.toLowerCase().startsWith('commercial - ')) {
-      console.log(`COMMERCIAL: stage detected: ${stage}`);
-      pipelineTags = ['Commercial'];
-      isCommercialStage = true;
-    } else {
-      // Regular tag-based pipeline detection (excludes Commercial)
-      pipelineTags = extractPipelineFromTags(person.tags);
-      console.log(`TAGS: Extracted pipeline tags from [${person.tags?.join(', ') || 'None'}]: [${pipelineTags.join(', ')}]`);
-    }
-
-    // Step 4: Enhanced pipeline logic based on stage matching
+    // Step 3: Enhanced pipeline logic based on stage matching
     if (pipelineTags.length === 0) {
       // Check if there's exactly one existing deal - if so, update it instead of sending notification
       if (allDeals.deals && allDeals.deals.length === 1) {
@@ -761,43 +761,17 @@ app.post('/webhook/person-stage-updated', async (req, res) => {
             }
             
             const dealId = existingDeals.deals[0].id;
-            const stageIdToUpdate = parseInt(stageResult.stageId);
-            
             console.log(`TARGET: Deal ID to update: ${dealId}`);
-            console.log(`TARGET: Stage ID to update to: ${stageIdToUpdate}`);
+            console.log(`TARGET: Stage ID to update to: ${stageResult.stageId}`);
             
-            // Validate stage ID before making the API call
-            if (!stageIdToUpdate || stageIdToUpdate === 0 || isNaN(stageIdToUpdate)) {
-              console.log(`ERROR: Invalid stage ID: ${stageResult.stageId} (parsed: ${stageIdToUpdate})`);
-              return res.json({ success: true, message: 'Invalid stage ID, skipping update' });
-            }
-            
-            // Check if deal is already at this stage
-            const currentDeal = existingDeals.deals[0];
-            if (currentDeal.stageId === stageIdToUpdate) {
-              console.log(`INFO: Deal ${dealId} already at stage ID ${stageIdToUpdate}, no update needed`);
-              return res.json({ 
-                success: true, 
-                message: 'Deal already at target stage', 
-                dealId: dealId,
-                currentStageId: stageIdToUpdate
-              });
-            }
-            
-            await fubAPI.put(`/deals/${dealId}`, { stageId: stageIdToUpdate });
+            await fubAPI.put(`/deals/${dealId}`, { stageId: parseInt(stageResult.stageId) });
             return res.json({ 
               success: true, 
               message: 'Deal updated', 
               dealId: dealId,
-              newStageId: stageIdToUpdate
+              newStageId: parseInt(stageResult.stageId)
             });
           } catch (error) {
-            // Only send error notification for real errors, not API validation errors
-            if (error.response?.status === 400 && error.response?.data?.errorMessage?.includes('No valid fields')) {
-              console.log(`WARNING: API rejected update - likely already at target stage or invalid data`);
-              return res.json({ success: true, message: 'Update skipped - API validation failed' });
-            }
-            
             await sendCriticalError(person, stage, `Failed to update deal: ${error.response?.data ? JSON.stringify(error.response.data) : error.message}`, error, pipelineTags);
             return res.status(500).json({ error: 'Failed to update deal' });
           }
