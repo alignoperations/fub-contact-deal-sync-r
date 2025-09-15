@@ -236,7 +236,8 @@ const STAGE_MAPPING = {
     'fall through', 'expired', 'cancelled', 'listing agreement', 
     'pre-listing', 'active listing', 'active off-market', 
     'application accepted', 'attorney review', 'under contract', 
-    'showing homes', 'offers submitted', 'submitting applications'
+    'showing homes', 'offers submitted', 'submitting applications',
+    'closed', 'closed - won', 'closed - lost', 'closed won', 'closed lost'  // Enhanced closed protection
   ],
   
   protectedPipelines: [
@@ -245,6 +246,7 @@ const STAGE_MAPPING = {
   
   deletionStages: [
     'lead', 'attempted contact', 'spoke with customer', 'unresponsive', 'nurture'
+    // Note: 'trash' is intentionally NOT in deletion stages - it should not trigger deal deletion
   ]
 };
 
@@ -255,6 +257,19 @@ const PIPELINE_MAPPING = {
   'Landlord': 3,
   'Tenant': 4,
   'Listing': 2
+};
+
+// Stage mapping for contact stage variations to deal stages
+const STAGE_VARIATIONS = {
+  'submitting offers': 'offers submitted',
+  'submitting applications': 'applications submitted',
+  // Add more mappings as needed
+};
+
+// Function to normalize stage names and handle variations
+const normalizeStageForComparison = (stageName) => {
+  const normalized = normalize(stageName);
+  return STAGE_VARIATIONS[normalized] || normalized;
 };
 
 // Utility functions
@@ -278,11 +293,15 @@ const extractPipelineFromTags = (tags) => {
 const shouldDeleteDeal = (deal, contactStage, availableStageNames) => {
   const dealStage = normalize(deal.stage || '');
   const pipelineName = normalize(deal.pipelineName || '');
-  let updatedStage = normalize(contactStage);
+  let updatedStage = normalizeStageForComparison(contactStage);
   
   if (contactStage.toLowerCase().startsWith('commercial - ')) {
-    updatedStage = normalize(contactStage.substring(13));
+    updatedStage = normalizeStageForComparison(formatStageForCommercial(contactStage));
   }
+  
+  // Enhanced closed deal detection
+  const closedKeywords = ['closed', 'won', 'lost', 'completed', 'finished'];
+  const isDealClosed = closedKeywords.some(keyword => dealStage.includes(keyword));
   
   if (STAGE_MAPPING.protectedPipelines.some(pipeline => 
     pipelineName.includes(normalize(pipeline)))) {
@@ -290,14 +309,21 @@ const shouldDeleteDeal = (deal, contactStage, availableStageNames) => {
     return false;
   }
   
-  if (dealStage.includes('closed')) {
-    console.log(`PROTECTED: Deal ${deal.id} is closed: ${dealStage}`);
+  if (isDealClosed) {
+    console.log(`PROTECTED: Deal ${deal.id} is closed/completed: ${dealStage}`);
     return false;
   }
   
   if (STAGE_MAPPING.protectedStages.some(stage => 
     dealStage.includes(normalize(stage)))) {
     console.log(`PROTECTED: Deal ${deal.id} in protected stage: ${dealStage}`);
+    return false;
+  }
+  
+  // Special protection: never delete deals when contact stage is "trash" 
+  // This is a contact management stage, not a deal progression stage
+  if (updatedStage === 'trash') {
+    console.log(`PROTECTED: Deal ${deal.id} protected from contact 'trash' stage - deals should not be deleted for contact management actions`);
     return false;
   }
   
@@ -308,7 +334,7 @@ const shouldDeleteDeal = (deal, contactStage, availableStageNames) => {
   
   const normalizedAvailableStages = availableStageNames.map(normalize);
   if (!normalizedAvailableStages.includes(updatedStage)) {
-    console.log(`DELETE: Deal ${deal.id} marked for deletion: contact stage '${updatedStage}' not found in pipeline stages`);
+    console.log(`DELETE: Deal ${deal.id} marked for deletion: contact stage '${contactStage}' (normalized: '${updatedStage}') not found in pipeline stages`);
     return true;
   }
   
@@ -319,15 +345,27 @@ const shouldDeleteDeal = (deal, contactStage, availableStageNames) => {
 const findStageId = (inputData) => {
   const { stageName, stageNames, stageIds, dealID } = inputData;
   
-  const inputName = normalize(stageName);
-  const namesArray = (stageNames || '').split(',').map(name => name.trim().toLowerCase());
+  const inputName = normalizeStageForComparison(stageName);
+  const namesArray = (stageNames || '').split(',').map(name => normalize(name.trim()));
   const idsArray = (stageIds || '').split(',').map(id => id.trim());
   const dealIdsArray = (dealID || '').split(',').map(id => id.trim()).filter(Boolean);
   
-  const index = namesArray.indexOf(inputName);
+  // Try exact match first, then check for reverse mapping
+  let index = namesArray.indexOf(inputName);
+  
+  // If no exact match, try to find the deal stage equivalent in the pipeline
+  if (index === -1) {
+    for (let i = 0; i < namesArray.length; i++) {
+      if (normalizeStageForComparison(namesArray[i]) === inputName) {
+        index = i;
+        break;
+      }
+    }
+  }
+  
   const matchedId = index !== -1 ? idsArray[index] : '0';
   
-  console.log(`MAPPING: Stage mapping: '${inputName}' -> Stage ID: ${matchedId}`);
+  console.log(`MAPPING: Stage mapping: '${stageName}' -> normalized: '${inputName}' -> Stage ID: ${matchedId}`);
   
   let shouldCreateDeal = 'no';
   let shouldUpdateDeal = 'no';
@@ -539,7 +577,36 @@ app.post('/webhook/person-stage-updated', async (req, res) => {
     const allDeals = await fubAPI.get(`/deals?personId=${personId}`);
     console.log(`SUCCESS: Found ${allDeals.deals?.length || 0} existing deals`);
     
-    // Step 2: Extract pipeline information from tags OR detect Commercial from stage
+    // Step 2: Check if contact stage already matches ANY existing deal stage FIRST
+    // This should check ALL deals regardless of pipeline to prevent duplicate creation
+    if (allDeals.deals && allDeals.deals.length > 0) {
+      for (const deal of allDeals.deals) {
+        let dealStageName = normalize(deal.stage || '');
+        let contactStageName = normalizeStageForComparison(stage);
+        
+        // Handle commercial stage formatting for comparison
+        if (stage.toLowerCase().startsWith('commercial - ')) {
+          contactStageName = normalizeStageForComparison(formatStageForCommercial(stage));
+        }
+        
+        // If contact stage matches ANY existing deal stage (regardless of pipeline), do nothing
+        if (dealStageName === contactStageName) {
+          console.log(`INFO: Contact stage '${stage}' (normalized: '${contactStageName}') already matches existing deal ${deal.id} in ${deal.pipelineName || 'Unknown'} pipeline with stage '${deal.stage}' - no action required`);
+          return res.json({ 
+            success: true, 
+            message: 'Contact stage matches existing deal stage across pipelines, no action required',
+            matchedDealId: deal.id,
+            matchedPipeline: deal.pipelineName,
+            originalContactStage: stage,
+            normalizedContactStage: contactStageName,
+            matchedDealStage: deal.stage
+          });
+        }
+      }
+      console.log(`INFO: Contact stage '${stage}' (normalized: '${normalizeStageForComparison(stage)}') does not match any existing deal stages - proceeding with pipeline logic`);
+    }
+
+    // Step 3: Extract pipeline information from tags OR detect Commercial from stage
     let pipelineTags = [];
     let isCommercialStage = false;
     
@@ -554,26 +621,7 @@ app.post('/webhook/person-stage-updated', async (req, res) => {
       console.log(`TAGS: Extracted pipeline tags from [${person.tags?.join(', ') || 'None'}]: [${pipelineTags.join(', ')}]`);
     }
 
-    // Step 2.5: Check if contact stage already matches an existing deal stage
-    if (allDeals.deals && allDeals.deals.length > 0) {
-      for (const deal of allDeals.deals) {
-        let dealStageName = normalize(deal.stage || '');
-        let contactStageName = normalize(stage);
-        
-        // Handle commercial stage formatting for comparison
-        if (stage.toLowerCase().startsWith('commercial - ')) {
-          contactStageName = normalize(formatStageForCommercial(stage));
-        }
-        
-        // If contact stage matches any existing deal stage, do nothing
-        if (dealStageName === contactStageName) {
-          console.log(`INFO: Contact stage '${stage}' already matches existing deal ${deal.id} stage '${deal.stage}' - no action required`);
-          return res.json({ success: true, message: 'Contact stage matches existing deal stage, no action required' });
-        }
-      }
-    }
-
-    // Step 3: Enhanced pipeline logic based on stage matching
+    // Step 4: Enhanced pipeline logic based on stage matching
     if (pipelineTags.length === 0) {
       // Check if there's exactly one existing deal - if so, update it instead of sending notification
       if (allDeals.deals && allDeals.deals.length === 1) {
@@ -761,17 +809,43 @@ app.post('/webhook/person-stage-updated', async (req, res) => {
             }
             
             const dealId = existingDeals.deals[0].id;
-            console.log(`TARGET: Deal ID to update: ${dealId}`);
-            console.log(`TARGET: Stage ID to update to: ${stageResult.stageId}`);
+            const stageIdToUpdate = parseInt(stageResult.stageId);
             
-            await fubAPI.put(`/deals/${dealId}`, { stageId: parseInt(stageResult.stageId) });
+            console.log(`TARGET: Deal ID to update: ${dealId}`);
+            console.log(`TARGET: Stage ID to update to: ${stageIdToUpdate}`);
+            
+            // Validate stage ID before making the API call
+            if (!stageIdToUpdate || stageIdToUpdate === 0 || isNaN(stageIdToUpdate)) {
+              console.log(`ERROR: Invalid stage ID: ${stageResult.stageId} (parsed: ${stageIdToUpdate})`);
+              return res.json({ success: true, message: 'Invalid stage ID, skipping update' });
+            }
+            
+            // Check if deal is already at this stage
+            const currentDeal = existingDeals.deals[0];
+            if (currentDeal.stageId === stageIdToUpdate) {
+              console.log(`INFO: Deal ${dealId} already at stage ID ${stageIdToUpdate}, no update needed`);
+              return res.json({ 
+                success: true, 
+                message: 'Deal already at target stage', 
+                dealId: dealId,
+                currentStageId: stageIdToUpdate
+              });
+            }
+            
+            await fubAPI.put(`/deals/${dealId}`, { stageId: stageIdToUpdate });
             return res.json({ 
               success: true, 
               message: 'Deal updated', 
               dealId: dealId,
-              newStageId: parseInt(stageResult.stageId)
+              newStageId: stageIdToUpdate
             });
           } catch (error) {
+            // Only send error notification for real errors, not API validation errors
+            if (error.response?.status === 400 && error.response?.data?.errorMessage?.includes('No valid fields')) {
+              console.log(`WARNING: API rejected update - likely already at target stage or invalid data`);
+              return res.json({ success: true, message: 'Update skipped - API validation failed' });
+            }
+            
             await sendCriticalError(person, stage, `Failed to update deal: ${error.response?.data ? JSON.stringify(error.response.data) : error.message}`, error, pipelineTags);
             return res.status(500).json({ error: 'Failed to update deal' });
           }
