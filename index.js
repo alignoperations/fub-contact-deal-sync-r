@@ -299,6 +299,8 @@ const shouldDeleteDeal = (deal, contactStage, availableStageNames) => {
   const pipelineName = normalize(deal.pipelineName || '');
   let updatedStage = normalizeStageForComparison(contactStage);
   
+  console.log(`CHECKING: Deal ${deal.id} with stage '${deal.stage}' (normalized: '${dealStage}') against contact stage '${contactStage}' (normalized: '${updatedStage}')`);
+  
   if (contactStage.toLowerCase().startsWith('commercial - ')) {
     updatedStage = normalizeStageForComparison(formatStageForCommercial(contactStage));
   }
@@ -318,9 +320,14 @@ const shouldDeleteDeal = (deal, contactStage, availableStageNames) => {
     return false;
   }
   
-  if (STAGE_MAPPING.protectedStages.some(stage => 
-    dealStage.includes(normalize(stage)))) {
-    console.log(`PROTECTED: Deal ${deal.id} in protected stage: ${dealStage}`);
+  // Enhanced protection check - check both exact match and partial match
+  const isProtectedStage = STAGE_MAPPING.protectedStages.some(stage => {
+    const normalizedProtectedStage = normalize(stage);
+    return dealStage.includes(normalizedProtectedStage) || normalizedProtectedStage.includes(dealStage);
+  });
+  
+  if (isProtectedStage) {
+    console.log(`PROTECTED: Deal ${deal.id} in protected stage: '${deal.stage}' (normalized: '${dealStage}')`);
     return false;
   }
   
@@ -336,14 +343,18 @@ const shouldDeleteDeal = (deal, contactStage, availableStageNames) => {
     return true;
   }
   
+  // Check if the contact stage (or its mapped equivalent) exists in this deal's pipeline
   const normalizedAvailableStages = availableStageNames.map(normalize);
-  if (!normalizedAvailableStages.includes(updatedStage)) {
-    console.log(`DELETE: Deal ${deal.id} marked for deletion: contact stage '${contactStage}' (normalized: '${updatedStage}') not found in pipeline stages`);
-    return true;
+  const mappedContactStage = normalizeStageForComparison(contactStage);
+  
+  if (normalizedAvailableStages.includes(normalize(updatedStage)) || 
+      normalizedAvailableStages.includes(normalize(mappedContactStage))) {
+    console.log(`SUCCESS: Deal ${deal.id} kept: contact stage '${contactStage}' or mapped stage found in pipeline`);
+    return false;
   }
   
-  console.log(`SUCCESS: Deal ${deal.id} kept: stage '${updatedStage}' found in pipeline`);
-  return false;
+  console.log(`DELETE: Deal ${deal.id} marked for deletion: contact stage '${contactStage}' (normalized: '${updatedStage}', mapped: '${mappedContactStage}') not found in pipeline stages: [${normalizedAvailableStages.join(', ')}]`);
+  return true;
 };
 
 const findStageId = (inputData) => {
@@ -711,17 +722,21 @@ app.post('/webhook/person-stage-updated', async (req, res) => {
         // Get stages for this pipeline and check if contact stage matches
         try {
           const pipelineStages = await fubAPI.get(`/pipelines/${testPipelineId}`);
-          const stageNames = pipelineStages.stages?.map(s => s.name.toLowerCase()) || [];
+          const stageNames = pipelineStages.stages?.map(s => normalize(s.name)) || [];
           
-          if (stageNames.includes(formattedStage.toLowerCase())) {
+          // Check both the original formatted stage AND the normalized version
+          const formattedStageNormalized = normalize(formattedStage);
+          const mappedStage = normalizeStageForComparison(formattedStage);
+          
+          if (stageNames.includes(formattedStageNormalized) || stageNames.includes(mappedStage)) {
             matchingPipelines.push({
               tag: pipelineTag,
               id: testPipelineId,
               formattedStage: formattedStage
             });
-            console.log(`SUCCESS: Stage '${formattedStage}' found in ${pipelineTag} pipeline`);
+            console.log(`SUCCESS: Stage '${formattedStage}' (or mapped equivalent) found in ${pipelineTag} pipeline`);
           } else {
-            console.log(`ERROR: Stage '${formattedStage}' not found in ${pipelineTag} pipeline`);
+            console.log(`ERROR: Stage '${formattedStage}' (normalized: '${formattedStageNormalized}', mapped: '${mappedStage}') not found in ${pipelineTag} pipeline stages: [${stageNames.join(', ')}]`);
           }
         } catch (error) {
           console.error(`FAILED: to check ${pipelineTag} pipeline:`, error.message);
