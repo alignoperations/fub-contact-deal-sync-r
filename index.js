@@ -262,7 +262,11 @@ const PIPELINE_MAPPING = {
 // Stage mapping for contact stage variations to deal stages
 const STAGE_VARIATIONS = {
   'submitting offers': 'offers submitted',
-  'submitting applications': 'applications submitted',
+  'submitting applications': 'application submitted',
+  'active off-market': 'active off market listing',
+  'referral out open': 'send referral agreement',
+  'referral out under contract': 'referral under contract',
+  'referral out closed': 'referral closed',
   // Add more mappings as needed
 };
 
