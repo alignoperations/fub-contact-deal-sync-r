@@ -778,6 +778,18 @@ app.post('/webhook/person-stage-updated', async (req, res) => {
     console.log(`USER: Assigned User ID: ${assignedUserId}`);
     console.log(`TAGS: Person Tags: ${person.tags?.join(', ') || 'None'}`);
     console.log(`STAGE: New Stage: ${stage}`);
+
+    // FILTER: Block "Closed" stage from creating/updating deals
+const normalizedStage = normalize(stage);
+if (normalizedStage.includes('closed')) {
+  console.log(`BLOCKED: Contact stage change to '${stage}' contains "closed" - preventing deal creation/update`);
+  console.log(`REASON: Closed deals should only be marked closed from the deal side, not from contact updates`);
+  return res.json({ 
+    success: true, 
+    message: 'Closed stage blocked - deals should be closed from deal side only',
+    blockedStage: stage
+  });
+}
     
     // LOOP PREVENTION: Check for the TriggeredDealContactStageUpdates tag
     const hasLoopPreventionTag = await tagHelpers.hasLoopPreventionTag(person.tags);
