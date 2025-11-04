@@ -779,7 +779,27 @@ app.post('/webhook/person-stage-updated', async (req, res) => {
     console.log(`TAGS: Person Tags: ${person.tags?.join(', ') || 'None'}`);
     console.log(`STAGE: New Stage: ${stage}`);
 
-    // FILTER: Block "Closed" stage from creating/updating deals
+// LOOP PREVENTION: Check for the TriggeredDealContactStageUpdates tag FIRST
+// This must happen before any other filters so the tag gets cleaned up
+const hasLoopPreventionTag = await tagHelpers.hasLoopPreventionTag(person.tags);
+
+if (hasLoopPreventionTag) {
+  console.log('LOOP_PREVENTION: Tag detected! This contact stage update was triggered by a deal stage change.');
+  console.log('LOOP_PREVENTION: Removing tag and skipping deal updates to prevent infinite loop.');
+  
+  // Remove the tag
+  await tagHelpers.removeLoopPreventionTag(personId);
+  
+  // Return success without updating any deals
+  return res.json({ 
+    success: true, 
+    message: 'Loop prevention: Contact stage update originated from deal change, skipping deal update',
+    loopPrevented: true
+  });
+}
+
+// FILTER: Block "Closed" stage from creating/updating deals
+// This runs AFTER loop prevention check so closed tags still get cleaned up
 const normalizedStage = normalize(stage);
 if (normalizedStage.includes('closed')) {
   console.log(`BLOCKED: Contact stage change to '${stage}' contains "closed" - preventing deal creation/update`);
@@ -790,24 +810,6 @@ if (normalizedStage.includes('closed')) {
     blockedStage: stage
   });
 }
-    
-    // LOOP PREVENTION: Check for the TriggeredDealContactStageUpdates tag
-    const hasLoopPreventionTag = await tagHelpers.hasLoopPreventionTag(person.tags);
-    
-    if (hasLoopPreventionTag) {
-      console.log('LOOP_PREVENTION: Tag detected! This contact stage update was triggered by a deal stage change.');
-      console.log('LOOP_PREVENTION: Removing tag and skipping deal updates to prevent infinite loop.');
-      
-      // Remove the tag
-      await tagHelpers.removeLoopPreventionTag(personId);
-      
-      // Return success without updating any deals
-      return res.json({ 
-        success: true, 
-        message: 'Loop prevention: Contact stage update originated from deal change, skipping deal update',
-        loopPrevented: true
-      });
-    }
     
     console.log('LOOP_PREVENTION: No tag detected - proceeding with normal deal update logic');
     
