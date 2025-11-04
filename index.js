@@ -414,7 +414,7 @@ const STAGE_MAPPING = {
   ],
   
   deletionStages: [
-    'lead', 'attempted contact', 'spoke with customer', 'nurture'
+    'lead', 'attempted contact', 'spoke with customer'
     // Note: 'trash' is intentionally NOT in deletion stages - it should not trigger deal deletion
   ]
 };
