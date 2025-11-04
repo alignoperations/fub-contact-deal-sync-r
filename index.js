@@ -236,8 +236,8 @@ const STAGE_MAPPING = {
     'fall through', 'expired', 'cancelled', 'listing agreement', 
     'pre-listing', 'active listing', 'active off-market', 
     'application accepted', 'attorney review', 'under contract', 
-    'showing homes', 'offers submitted', 'submitting applications',
-    'closed', 'closed - won', 'closed - lost', 'closed won', 'closed lost'  // Enhanced closed protection
+    'showing homes', 'offers submitted', 'submitting applications', 'temporarily off market', 'application rejected'
+    'closed'  // Enhanced closed protection
   ],
   
   protectedPipelines: [
@@ -245,7 +245,7 @@ const STAGE_MAPPING = {
   ],
   
   deletionStages: [
-    'lead', 'attempted contact', 'spoke with customer', 'unresponsive', 'nurture'
+    'lead', 'attempted contact', 'spoke with customer', 'nurture'
     // Note: 'trash' is intentionally NOT in deletion stages - it should not trigger deal deletion
   ]
 };
