@@ -254,6 +254,7 @@ const asanaAPI = {
 const isDealActive = (deal) => {
   const dealStage = normalize(deal.stage || '');
   
+  // Any stage containing 'closed' is protected (e.g., "Closed 2024", "Closed 2023")
   if (dealStage.includes('closed')) {
     return false;
   }
@@ -269,12 +270,20 @@ const isDealActive = (deal) => {
 // Enhanced Stage mapping configuration
 const STAGE_MAPPING = {
   protectedStages: [
-    'offer rejected', 'client not taken', 'working with another agent', 
-    'fall through', 'expired', 'cancelled', 'listing agreement', 
-    'pre-listing', 'active listing', 'active off-market', 
+    // Lost/rejected stages
+    'offer rejected', 'client not taken', 'working with another agent', 'fall through',
+    
+    // Listing stages
+    'expired', 'cancelled', 'listing agreement', 'pre-listing', 'active listing', 
+    'active office exclusive', 'active off-market',
+    
+    // Advanced buyer/tenant stages
     'application accepted', 'attorney review', 'under contract', 
-    'showing homes', 'offers submitted', 'submitting applications',
-    'closed', 'closed - won', 'closed - lost', 'closed won', 'closed lost'  // Enhanced closed protection
+    'offers submitted', 'submitting applications'
+    
+    // Note: 'showing homes' removed - should count as duplicate
+    // Note: 'appointment set', 'met with customer' NOT listed - should count as duplicates
+    // Note: Closed stages handled by includes('closed') check above
   ],
   
   protectedPipelines: [
