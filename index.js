@@ -21,53 +21,6 @@ const CONFIG = {
   COMMERCIAL_PIPELINE_ID: null
 };
 
-// Environment variable validation
-function validateEnvironmentVariables() {
-  const required = {
-    FUB_API_KEY: CONFIG.FUB_API_KEY,
-    SLACK_BOT_TOKEN: CONFIG.SLACK_BOT_TOKEN,
-    SLACK_NOTIFICATIONS_CHANNEL_ID: CONFIG.SLACK_NOTIFICATIONS_CHANNEL_ID,
-    ASANA_ACCESS_TOKEN: CONFIG.ASANA_ACCESS_TOKEN,
-    ASANA_PROJECT_ID: CONFIG.ASANA_PROJECT_ID,
-    ASANA_ASSIGNEE_GID: CONFIG.ASANA_ASSIGNEE_GID
-  };
-
-  const missing = [];
-  const warnings = [];
-
-  for (const [key, value] of Object.entries(required)) {
-    if (!value) {
-      missing.push(key);
-    }
-  }
-
-  // Optional but recommended variables
-  if (!CONFIG.SLACK_OPERATIONS_USER_ID) {
-    warnings.push('SLACK_OPERATIONS_USER_ID');
-  }
-  if (!CONFIG.SLACK_OWNER_USER_ID) {
-    warnings.push('SLACK_OWNER_USER_ID');
-  }
-
-  if (missing.length > 0) {
-    console.error('ERROR: Missing required environment variables:');
-    missing.forEach(key => console.error(`  - ${key}`));
-    console.error('\nThe application cannot start without these variables.');
-    process.exit(1);
-  }
-
-  if (warnings.length > 0) {
-    console.warn('WARNING: Optional environment variables not set:');
-    warnings.forEach(key => console.warn(`  - ${key}`));
-    console.warn('Some features may not work as expected.\n');
-  }
-
-  console.log('SUCCESS: All required environment variables are set');
-}
-
-// Run validation immediately
-validateEnvironmentVariables();
-
 // Middleware
 app.use(express.json());
 
@@ -108,80 +61,48 @@ const fubAPI = {
   async get(endpoint) {
     try {
       const response = await axios.get(`${CONFIG.FUB_BASE_URL}${endpoint}`, {
-        headers: this.headers,
-        timeout: 15000
+        headers: this.headers
       });
       return response.data;
     } catch (error) {
-      const errorDetails = {
-        endpoint,
-        status: error.response?.status,
-        statusText: error.response?.statusText,
-        message: error.message,
-        data: error.response?.data
-      };
-      console.error(`FUB API GET error for ${endpoint}:`, errorDetails);
-      throw new Error(`FUB API GET failed: ${error.message} (${endpoint})`);
+      console.error(`FUB API GET error for ${endpoint}:`, error.message);
+      throw error;
     }
   },
 
   async post(endpoint, data) {
     try {
       const response = await axios.post(`${CONFIG.FUB_BASE_URL}${endpoint}`, data, {
-        headers: this.headers,
-        timeout: 15000
+        headers: this.headers
       });
       return response.data;
     } catch (error) {
-      const errorDetails = {
-        endpoint,
-        status: error.response?.status,
-        statusText: error.response?.statusText,
-        message: error.message,
-        data: error.response?.data
-      };
-      console.error(`FUB API POST error for ${endpoint}:`, errorDetails);
-      throw new Error(`FUB API POST failed: ${error.message} (${endpoint})`);
+      console.error(`FUB API POST error for ${endpoint}:`, error.message);
+      throw error;
     }
   },
 
   async put(endpoint, data) {
     try {
       const response = await axios.put(`${CONFIG.FUB_BASE_URL}${endpoint}`, data, {
-        headers: this.headers,
-        timeout: 15000
+        headers: this.headers
       });
       return response.data;
     } catch (error) {
-      const errorDetails = {
-        endpoint,
-        status: error.response?.status,
-        statusText: error.response?.statusText,
-        message: error.message,
-        data: error.response?.data
-      };
-      console.error(`FUB API PUT error for ${endpoint}:`, errorDetails);
-      throw new Error(`FUB API PUT failed: ${error.message} (${endpoint})`);
+      console.error(`FUB API PUT error for ${endpoint}:`, error.message);
+      throw error;
     }
   },
 
   async delete(endpoint) {
     try {
       const response = await axios.delete(`${CONFIG.FUB_BASE_URL}${endpoint}`, {
-        headers: this.headers,
-        timeout: 15000
+        headers: this.headers
       });
       return response.data;
     } catch (error) {
-      const errorDetails = {
-        endpoint,
-        status: error.response?.status,
-        statusText: error.response?.statusText,
-        message: error.message,
-        data: error.response?.data
-      };
-      console.error(`FUB API DELETE error for ${endpoint}:`, errorDetails);
-      throw new Error(`FUB API DELETE failed: ${error.message} (${endpoint})`);
+      console.error(`FUB API DELETE error for ${endpoint}:`, error.message);
+      throw error;
     }
   }
 };
@@ -189,13 +110,6 @@ const fubAPI = {
 // Updated Slack API Helper
 const slackAPI = {
   async sendDM(userId, message) {
-    if (!userId) {
-      throw new Error('Slack DM failed: userId is required');
-    }
-    if (!message) {
-      throw new Error('Slack DM failed: message is required');
-    }
-
     try {
       const response = await axios.post('https://slack.com/api/chat.postMessage', {
         channel: userId,
@@ -204,36 +118,22 @@ const slackAPI = {
         headers: {
           'Authorization': `Bearer ${CONFIG.SLACK_BOT_TOKEN}`,
           'Content-Type': 'application/json'
-        },
-        timeout: 10000
+        }
       });
 
       if (!response.data.ok) {
-        throw new Error(`Slack API error: ${response.data.error || 'Unknown error'}`);
+        throw new Error(`Slack API error: ${response.data.error}`);
       }
 
       console.log(`SUCCESS: Slack DM sent to ${userId}`);
       return response.data;
     } catch (error) {
-      const errorDetails = {
-        userId,
-        status: error.response?.status,
-        message: error.message,
-        slackError: error.response?.data?.error
-      };
-      console.error(`FAILED: to send Slack DM to ${userId}:`, errorDetails);
-      throw new Error(`Slack DM failed: ${error.message}`);
+      console.error(`FAILED: to send Slack DM to ${userId}:`, error.message);
+      throw error;
     }
   },
 
   async sendChannelMessage(channelId, message) {
-    if (!channelId) {
-      throw new Error('Slack channel message failed: channelId is required');
-    }
-    if (!message) {
-      throw new Error('Slack channel message failed: message is required');
-    }
-
     try {
       const response = await axios.post('https://slack.com/api/chat.postMessage', {
         channel: channelId,
@@ -242,90 +142,21 @@ const slackAPI = {
         headers: {
           'Authorization': `Bearer ${CONFIG.SLACK_BOT_TOKEN}`,
           'Content-Type': 'application/json'
-        },
-        timeout: 10000
+        }
       });
 
       if (!response.data.ok) {
-        throw new Error(`Slack API error: ${response.data.error || 'Unknown error'}`);
+        throw new Error(`Slack API error: ${response.data.error}`);
       }
 
       console.log(`SUCCESS: Slack message sent to channel ${channelId}`);
       return response.data;
     } catch (error) {
-      const errorDetails = {
-        channelId,
-        status: error.response?.status,
-        message: error.message,
-        slackError: error.response?.data?.error
-      };
-      console.error(`FAILED: to send Slack message to channel ${channelId}:`, errorDetails);
-      throw new Error(`Slack channel message failed: ${error.message}`);
+      console.error(`FAILED: to send Slack message to channel ${channelId}:`, error.message);
+      throw error;
     }
   }
 };
-
-// Tag management helpers for loop prevention
-const tagHelpers = {
-  async hasLoopPreventionTag(personTags) {
-    // Check if person has the TriggeredDealContactStageUpdates tag
-    if (!personTags || !Array.isArray(personTags)) {
-      return false;
-    }
-    return personTags.some(tag => 
-      (typeof tag === 'string' && tag.toLowerCase() === 'triggereddealcontactstageupdates') ||
-      (tag.name && tag.name.toLowerCase() === 'triggereddealcontactstageupdates')
-    );
-  },
-
-  async removeLoopPreventionTag(personId) {
-    try {
-      console.log('LOOP_PREVENTION: Checking for and removing TriggeredDealContactStageUpdates tag from person:', personId);
-      
-      // Get person's current tags
-      const personData = await fubAPI.get(`/people/${personId}`);
-      
-      if (!personData.tags || !Array.isArray(personData.tags)) {
-        console.log('LOOP_PREVENTION: No tags found on person');
-        return false;
-      }
-
-      // Find the loop prevention tag
-      const loopPreventionTag = personData.tags.find(tag => {
-        const tagName = typeof tag === 'string' ? tag : tag.name;
-        return tagName && tagName.toLowerCase() === 'triggereddealcontactstageupdates';
-      });
-
-      if (!loopPreventionTag) {
-        console.log('LOOP_PREVENTION: Tag not found on person');
-        return false;
-      }
-
-      // Get the tag ID if it's an object, otherwise it's the string name
-      const tagToRemove = typeof loopPreventionTag === 'string' ? loopPreventionTag : loopPreventionTag.name;
-
-      // Get all tags except the loop prevention tag
-      const remainingTags = personData.tags.filter(tag => {
-        const tagName = typeof tag === 'string' ? tag : tag.name;
-        return tagName && tagName.toLowerCase() !== 'triggereddealcontactstageupdates';
-      }).map(tag => typeof tag === 'string' ? tag : tag.name);
-
-      console.log('LOOP_PREVENTION: Removing tag. Remaining tags:', remainingTags);
-
-      // Update person with remaining tags (this replaces all tags)
-      await fubAPI.put(`/people/${personId}`, {
-        tags: remainingTags
-      });
-
-      console.log('LOOP_PREVENTION: Successfully removed tag from person:', personId);
-      return true;
-    } catch (error) {
-      console.error('LOOP_PREVENTION: Failed to remove tag:', error.message);
-      return false;
-    }
-  }
-};
-
 
 // Updated Asana API Helper
 const asanaAPI = {
@@ -361,6 +192,43 @@ const asanaAPI = {
         message: error.message
       });
       throw error;
+    }
+  },
+
+  async searchTasks(taskName, projectId = CONFIG.ASANA_PROJECT_ID) {
+    try {
+      console.log(`Asana: Searching for existing task: ${taskName}`);
+      
+      const response = await axios.get('https://app.asana.com/api/1.0/tasks', {
+        headers: {
+          'Authorization': `Bearer ${CONFIG.ASANA_ACCESS_TOKEN}`,
+          'Content-Type': 'application/json'
+        },
+        params: {
+          project: projectId,
+          completed_since: 'now', // Only get incomplete tasks
+          opt_fields: 'name,completed'
+        }
+      });
+      
+      // Filter to find exact name match
+      const matchingTask = response.data.data.find(task => 
+        task.name === taskName && !task.completed
+      );
+      
+      if (matchingTask) {
+        console.log(`SUCCESS: Found existing incomplete task: ${matchingTask.gid}`);
+      } else {
+        console.log(`INFO: No existing incomplete task found for: ${taskName}`);
+      }
+      
+      return matchingTask || null;
+    } catch (error) {
+      console.error('FAILED: Asana search error:', {
+        status: error.response?.status,
+        message: error.message
+      });
+      return null;
     }
   },
 
@@ -406,7 +274,7 @@ const STAGE_MAPPING = {
     'pre-listing', 'active listing', 'active off-market', 
     'application accepted', 'attorney review', 'under contract', 
     'showing homes', 'offers submitted', 'submitting applications',
-    'closed', 'temporarily off market', 'application rejected', 'active office exclusive'  // Enhanced closed protection
+    'closed', 'closed - won', 'closed - lost', 'closed won', 'closed lost'  // Enhanced closed protection
   ],
   
   protectedPipelines: [
@@ -414,7 +282,7 @@ const STAGE_MAPPING = {
   ],
   
   deletionStages: [
-    'lead', 'attempted contact', 'spoke with customer'
+    'lead', 'attempted contact', 'spoke with customer', 'unresponsive', 'nurture'
     // Note: 'trash' is intentionally NOT in deletion stages - it should not trigger deal deletion
   ]
 };
@@ -431,35 +299,12 @@ const PIPELINE_MAPPING = {
 // Stage mapping for contact stage variations to deal stages
 const STAGE_VARIATIONS = {
   'submitting offers': 'offers submitted',
+  'submitting applications': 'application submitted',
+  'active off-market': 'active off market listing',
   'referral out open': 'send referral agreement',
   'referral out under contract': 'referral under contract',
   'referral out closed': 'referral closed',
   // Add more mappings as needed
-};
-
-// Pipeline-specific stage mappings for contact stages that map to different deal stages based on pipeline
-const getPipelineSpecificStage = (contactStage, pipelineTag) => {
-  const normalizedContactStage = normalize(contactStage);
-  
-  // Submitting offers -> different deal stages based on pipeline
-  if (normalizedContactStage === 'submitting offers') {
-    if (pipelineTag === 'Buyer') {
-      return 'Offers Submitted';
-    } else if (pipelineTag === 'Tenant') {
-      return 'Applications Submitted';
-    }
-  }
-  
-  // Under Contract -> different deal stages based on pipeline
-  if (normalizedContactStage === 'under contract') {
-    if (pipelineTag === 'Tenant' || pipelineTag === 'Landlord') {
-      return 'Application Accepted';
-    } else if (pipelineTag === 'Buyer' || pipelineTag === 'Listing' || pipelineTag === 'Seller') {
-      return 'Under Contract';
-    }
-  }
-  
-  return null; // No pipeline-specific mapping
 };
 
 // Function to normalize stage names and handle variations
@@ -778,40 +623,6 @@ app.post('/webhook/person-stage-updated', async (req, res) => {
     console.log(`USER: Assigned User ID: ${assignedUserId}`);
     console.log(`TAGS: Person Tags: ${person.tags?.join(', ') || 'None'}`);
     console.log(`STAGE: New Stage: ${stage}`);
-
-// LOOP PREVENTION: Check for the TriggeredDealContactStageUpdates tag FIRST
-// This must happen before any other filters so the tag gets cleaned up
-const hasLoopPreventionTag = await tagHelpers.hasLoopPreventionTag(person.tags);
-
-if (hasLoopPreventionTag) {
-  console.log('LOOP_PREVENTION: Tag detected! This contact stage update was triggered by a deal stage change.');
-  console.log('LOOP_PREVENTION: Removing tag and skipping deal updates to prevent infinite loop.');
-  
-  // Remove the tag
-  await tagHelpers.removeLoopPreventionTag(personId);
-  
-  // Return success without updating any deals
-  return res.json({ 
-    success: true, 
-    message: 'Loop prevention: Contact stage update originated from deal change, skipping deal update',
-    loopPrevented: true
-  });
-}
-
-// FILTER: Block "Closed" stage from creating/updating deals
-// This runs AFTER loop prevention check so closed tags still get cleaned up
-const normalizedStage = normalize(stage);
-if (normalizedStage.includes('closed')) {
-  console.log(`BLOCKED: Contact stage change to '${stage}' contains "closed" - preventing deal creation/update`);
-  console.log(`REASON: Closed deals should only be marked closed from the deal side, not from contact updates`);
-  return res.json({ 
-    success: true, 
-    message: 'Closed stage blocked - deals should be closed from deal side only',
-    blockedStage: stage
-  });
-}
-    
-    console.log('LOOP_PREVENTION: No tag detected - proceeding with normal deal update logic');
     
     // Step 1: Get all existing deals for this person
     console.log(`FETCHING: all deals for person ${personId}...`);
@@ -940,15 +751,7 @@ if (normalizedStage.includes('closed')) {
           }
         } else {
           testPipelineId = PIPELINE_MAPPING[pipelineTag];
-          
-          // Check for pipeline-specific stage mappings first
-          const pipelineSpecificStage = getPipelineSpecificStage(stage, pipelineTag);
-          if (pipelineSpecificStage) {
-            formattedStage = pipelineSpecificStage;
-            console.log(`PIPELINE_SPECIFIC: ${stage} in ${pipelineTag} pipeline → ${pipelineSpecificStage}`);
-          } else {
-            formattedStage = formatStageForBuyer(pipelineTag, stage);
-          }
+          formattedStage = formatStageForBuyer(pipelineTag, stage);
         }
         
         if (!testPipelineId) continue;
@@ -1173,14 +976,13 @@ if (normalizedStage.includes('closed')) {
 // Updated critical error notification function
 async function sendCriticalError(person, stage, errorMessage, error, pipelineTags = []) {
   try {
-    const errorStack = error?.stack ? error.stack.substring(0, 500) : 'No stack trace available';
-    const errorDetails = error ? `\nError: ${error.message}\nStack: ${errorStack}` : '';
+    const errorDetails = error ? `\nError: ${error.message}\nStack: ${error.stack?.substring(0, 500)}` : '';
     const pipelineInfo = pipelineTags.length > 0 ? `\n*Detected Pipeline Tags:* ${pipelineTags.join(', ')}` : '\n*Detected Pipeline Tags:* None';
     
     const message = `ALERT: *CRITICAL ERROR - FUB Contact-Deal Sync*
     
-*Contact:* ${person.name || 'Unknown'}
-*Contact ID:* ${person.id || 'Unknown'}
+*Contact:* ${person.name}
+*Contact ID:* ${person.id}
 *Stage:* ${stage}${pipelineInfo}
 *Error:* ${errorMessage}
 ${errorDetails}
@@ -1193,15 +995,10 @@ This requires immediate attention. The automation failed to process this contact
     if (CONFIG.SLACK_NOTIFICATIONS_CHANNEL_ID) {
       await slackAPI.sendChannelMessage(CONFIG.SLACK_NOTIFICATIONS_CHANNEL_ID, message);
       console.log(`SUCCESS: Critical error notification sent to channel ${CONFIG.SLACK_NOTIFICATIONS_CHANNEL_ID}`);
-    } else {
-      console.error('ERROR: Cannot send critical error notification - SLACK_NOTIFICATIONS_CHANNEL_ID not configured');
     }
     
   } catch (notificationError) {
-    console.error('FAILED: to send critical error notification:', {
-      message: notificationError.message,
-      originalError: errorMessage
-    });
+    console.error('FAILED: to send critical error notification:', notificationError);
   }
 }
 
@@ -1281,8 +1078,15 @@ Next Steps:
 2. Delete any duplicates
 3. Update the remaining deal to the correct stage: ${contactStage}`;
 
-    const task = await asanaAPI.createTask(title, description, CONFIG.ASANA_ASSIGNEE_GID);
-    console.log(`SUCCESS: Created Asana task ${task.data.gid} for duplicate deals`);
+    // Check if task already exists
+    const existingTask = await asanaAPI.searchTasks(title);
+    
+    if (existingTask) {
+      console.log(`INFO: Asana task already exists, skipping creation - Task ID: ${existingTask.gid}`);
+    } else {
+      const task = await asanaAPI.createTask(title, description, CONFIG.ASANA_ASSIGNEE_GID);
+      console.log(`SUCCESS: Created Asana task ${task.data.gid} for duplicate deals`);
+    }
     
   } catch (error) {
     console.error('FAILED: to create Asana task for duplicate deals:', error);
