@@ -406,7 +406,7 @@ const STAGE_MAPPING = {
     'pre-listing', 'active listing', 'active off-market', 
     'application accepted', 'attorney review', 'under contract', 
     'showing homes', 'offers submitted', 'submitting applications',
-    'closed', 'temporarily off market', 'application rejected'  // Enhanced closed protection
+    'closed', 'temporarily off market', 'application rejected', 'active office exclusive'  // Enhanced closed protection
   ],
   
   protectedPipelines: [
