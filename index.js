@@ -822,7 +822,29 @@ app.post('/webhook/person-stage-updated', async (req, res) => {
         if (existingDeals.deals && existingDeals.deals.length > 0) {
           const activeDeals = existingDeals.deals.filter(isDealActive);
           if (activeDeals.length > 1) {
-            await createDuplicateDealsTask(person, stage, pipelineTag, activeDeals);
+            // COMMENTED OUT - Building new duplicate detection automation
+            // await createDuplicateDealsTask(person, stage, pipelineTag, activeDeals);
+            
+            console.log(`INFO: Duplicate active deals detected but Asana task creation PAUSED`, {
+              personName: person.name,
+              personId: person.id,
+              contactStage: stage,
+              pipeline: pipelineTag,
+              pipelineId: pipelineId,
+              activeDealsCount: activeDeals.length,
+              totalDealsCount: existingDeals.deals.length,
+              activeDeals: activeDeals.map(d => ({
+                id: d.id,
+                stage: d.stage,
+                stageId: d.stageId
+              })),
+              allDeals: existingDeals.deals.map(d => ({
+                id: d.id,
+                stage: d.stage,
+                stageId: d.stageId,
+                isActive: isDealActive(d)
+              }))
+            });
           }
         }
         
