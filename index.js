@@ -271,7 +271,7 @@ const isDealActive = (deal) => {
 const STAGE_MAPPING = {
   protectedStages: [
     // Lost/rejected stages
-    'offer rejected', 'client not taken', 'working with another agent', 'fall through',
+    'offer rejected / withdrawn', 'client not taken', 'working with another agent', 'fall through',
     
     // Listing stages
     'expired', 'cancelled', 'listing agreement', 'pre-listing', 'active listing', 
