@@ -4,6 +4,7 @@
 
 const axios = require('axios');
 const express = require('express');
+const { logError, classifyError } = require('./errorLogger');
 const app = express();
 
 // Configuration - Updated to use environment variables
@@ -879,6 +880,13 @@ app.post('/webhook/person-stage-updated', async (req, res) => {
               stageId: parseInt(stageResult.stageId)
             });
           } catch (error) {
+            logError({
+              appName: 'fub-contact-deal-sync-r',
+              errorType: classifyError(error),
+              errorMessage: `Failed to create deal: ${error.message}`,
+              httpStatus: error.response?.status,
+              context: JSON.stringify(error.response?.data || {}).slice(0, 1000)
+            });
             await sendCriticalError(person, stage, `Failed to create deal: ${error.response?.data ? JSON.stringify(error.response.data) : error.message}`, error, pipelineTags);
             return res.status(500).json({ error: 'Failed to create deal' });
           }
@@ -932,7 +940,13 @@ app.post('/webhook/person-stage-updated', async (req, res) => {
               console.log(`WARNING: API rejected update - likely already at target stage or invalid data`);
               return res.json({ success: true, message: 'Update skipped - API validation failed' });
             }
-            
+            logError({
+              appName: 'fub-contact-deal-sync-r',
+              errorType: classifyError(error),
+              errorMessage: `Failed to update deal: ${error.message}`,
+              httpStatus: error.response?.status,
+              context: JSON.stringify(error.response?.data || {}).slice(0, 1000)
+            });
             await sendCriticalError(person, stage, `Failed to update deal: ${error.response?.data ? JSON.stringify(error.response.data) : error.message}`, error, pipelineTags);
             return res.status(500).json({ error: 'Failed to update deal' });
           }
@@ -990,16 +1004,23 @@ app.post('/webhook/person-stage-updated', async (req, res) => {
   } catch (error) {
     console.error('CRITICAL: webhook error:', error);
     console.error('Error stack:', error.stack);
-    
+    logError({
+      appName: 'fub-contact-deal-sync-r',
+      errorType: classifyError(error),
+      errorMessage: `Critical webhook error: ${error.message}`,
+      httpStatus: error.response?.status,
+      context: JSON.stringify(error.response?.data || {}).slice(0, 1000)
+    });
+
     // Send critical error notification
     await sendCriticalError(
-      person || { name: 'Unknown', id: 'Unknown' }, 
-      req.body.data?.stage || 'Unknown', 
-      'Critical webhook processing error', 
+      person || { name: 'Unknown', id: 'Unknown' },
+      req.body.data?.stage || 'Unknown',
+      'Critical webhook processing error',
       error,
       []
     );
-    
+
     res.status(500).json({ error: 'Internal server error' });
   }
 });
